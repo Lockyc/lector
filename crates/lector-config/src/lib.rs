@@ -435,6 +435,8 @@ title = "W"
             "url = \"https://x.test/\"",
             "session = \"work\"",
             "reload_every = 15",
+            "shell = \"fish\"",
+            "probe = true",
         ] {
             let src = format!(
                 "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"T\"\ndir = \"/tmp\"\n{bad}\n"

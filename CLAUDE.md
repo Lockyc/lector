@@ -93,13 +93,15 @@ being compiled. The shared cores are git dependencies, built out of
 `~/.cargo/git/checkouts/`, which rustup never looks in — so **a core's own `rust-toolchain.toml`
 is inert when lector builds it**; lector compiles the whole dependency graph with its own pin.
 
-- This repo's `rust-toolchain.toml` (currently `1.96.0`) matches **config-core's canonical
-  pin** — bump config-core first, then match it here (and in warden/curator, which share the
-  same pin).
-- **compositor is the deliberate exception**: it pins its own, newer channel (currently
-  `1.97.0`) for its own CI/gate equivalence. lector compiles compositor's *source* with
-  lector's pin, not compositor's — lector's build is the drift detector for compositor's
-  source; do not "fix" the mismatch by matching compositor's channel here.
+- This repo's `rust-toolchain.toml` matches **config-core's canonical pin** — bump config-core
+  first, then match it here (and in warden/curator, which share the same pin). The two files
+  are the source of truth for the channel; don't restate it in prose, here or anywhere else.
+- **compositor is the deliberate exception**: it pins its own, newer channel for its own
+  CI/gate equivalence. lector compiles compositor's *source* with lector's pin, not
+  compositor's — lector's build is the drift detector for compositor's source; do not "fix"
+  the mismatch by matching compositor's channel here. (`cargo tree` and the two
+  `rust-toolchain.toml` files answer "which channels?" truthfully; a number written here
+  goes stale the next time either moves.)
 
 ## The `[patch]` rule and land order
 

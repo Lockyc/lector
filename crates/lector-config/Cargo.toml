@@ -1,0 +1,15 @@
+[package]
+name = "lector-config"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+# Shared house-style TOML formatter + colour parsing, shared with warden and curator. Pinned by rev —
+# the shared formatter must format identically in all three apps, so an unpinned dep floating forward
+# in only one repo would silently diverge `lector fmt` from its siblings. This rev MUST match
+# curator's and warden's; bump all three in lockstep.
+config-core = { git = "https://github.com/Lockyc/config-core", rev = "3c7d79565d30aa835b74f93716b39f7e302594f6" }

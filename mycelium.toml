@@ -1,0 +1,10 @@
+name    = "lector"
+summary = "A macOS console of grouped tabs over locally-rendered compositor doc sites — one tab per doc repo on disk, live-reloading with nothing deployed"
+kind    = "app"
+status  = "wip"
+tags    = ["docs", "tauri", "macos", "markdown", "live-reload"]
+stack   = ["rust", "tauri", "javascript"]
+
+[[provides]]
+name    = "local-doc-console"
+summary = "Renders doc repos straight off the working tree — one compositor serve loop per live tab on an ephemeral loopback port, watching for edits. What curator structurally cannot do: no deploy, nothing published."

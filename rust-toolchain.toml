@@ -1,0 +1,15 @@
+# Pin the toolchain so rustfmt/clippy behave identically for everyone — an unpinned
+# `stable` drifts as new releases re-wrap code or add lints, causing spurious
+# fmt/clippy churn. rustup auto-installs this on first cargo use.
+#
+# Keep this in lockstep with config-core (the canonical pin) and the sibling apps
+# that share it (warden, curator). The shared cores are *git dependencies*, so their
+# own pins do NOT apply when lector builds them — lector compiles the whole graph
+# with THIS toolchain. Bump config-core first, then match it here.
+#
+# compositor is the exception and the divergence is deliberate: it pins its own,
+# newer channel for its CI/gate equivalence, and lector compiles its source with
+# this one. lector's build is the drift detector; do not "fix" it by matching.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

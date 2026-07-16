@@ -5,6 +5,9 @@
 //! `lector_config::{Colour, format_file, format_str}`.
 pub use config_core::{fmt_cli, format_file, format_str, Colour, ColourError};
 
+pub mod hash;
+pub mod identity;
+
 use serde::{Deserialize, Serialize};
 
 /// What to open when a window launches. `false` (default) → blank; `true` → its first tab;
@@ -294,6 +297,86 @@ pub fn expand_tilde(dir: &str) -> std::path::PathBuf {
     }
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TabView {
+    pub label: String,
+    /// The group this tab renders under, or `None` for a loose (ungrouped) tab — the chrome
+    /// shows a section header only for `Some(name)`. Serialized to the sidebar as `null` for loose.
+    pub group: Option<String>,
+    pub title: String,
+    pub dir: String,
+    pub load_on_open: bool,
+}
+
+/// Stable within-window tab label derived from a tab's **canonicalized** dir — the spec's identity
+/// rule. Position-independent, so inserting/removing/reordering tabs doesn't remap an existing
+/// webview, and title-independent, so retitling is free.
+///
+/// Canonicalization makes identity a property of the repo rather than of how the config spelled its
+/// path (`~/x`, `/Users/me/x`, and `/Users/me/./x` are one repo, one server, one label). A dir that
+/// doesn't resolve falls back to the tilde-expanded path: a missing repo only warns, so it must
+/// still get a label — and it gets the same one once the repo is cloned at that path.
+///
+/// `fnv1a_64`, never `DefaultHasher` — see `hash`'s module docs.
+fn dir_label(dir: &str) -> String {
+    let expanded = expand_tilde(dir);
+    let canonical = std::fs::canonicalize(&expanded).unwrap_or(expanded);
+    format!(
+        "tab-{:016x}",
+        crate::hash::fnv1a_64(canonical.as_os_str().as_encoded_bytes())
+    )
+}
+
+impl WindowConfig {
+    /// Flatten this window's loose tabs + groups → ordered tabs with stable labels (file order:
+    /// loose tabs first as a headerless section, then each group).
+    pub fn tab_views(&self) -> Vec<TabView> {
+        let wid = crate::identity::window_id(&self.title);
+        let mut views = Vec::new();
+        let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        // Loose tabs (group `None`) first, then each group's tabs (group `Some(name)`), all in
+        // file order, sharing one dir-label dedup map so duplicate dirs across the window still
+        // get distinct labels.
+        let entries = self.tabs.iter().map(|t| (t, Option::<String>::None)).chain(
+            self.groups
+                .iter()
+                .flat_map(|g| g.tabs.iter().map(move |t| (t, Some(g.name.clone())))),
+        );
+        for (tab, group) in entries {
+            let base = dir_label(&tab.dir);
+            let n = seen.entry(base.clone()).or_insert(0);
+            let within = if *n == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{n}")
+            };
+            *n += 1;
+            views.push(TabView {
+                label: crate::identity::namespaced(&wid, &within),
+                group,
+                title: tab.title.clone(),
+                dir: tab.dir.clone(),
+                load_on_open: tab.load_on_open,
+            });
+        }
+        views
+    }
+
+    /// Label of the tab to open on launch (per `open_on_launch`). `None` = blank.
+    pub fn startup_label(&self) -> Option<String> {
+        let views = self.tab_views();
+        match &self.open_on_launch {
+            OpenOnLaunch::Toggle(false) => None,
+            OpenOnLaunch::Toggle(true) => views.first().map(|v| v.label.clone()),
+            OpenOnLaunch::Tab(title) => views
+                .iter()
+                .find(|v| v.title == *title)
+                .or_else(|| views.first())
+                .map(|v| v.label.clone()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,5 +607,144 @@ title = "W"
             expand_tilde("~notahome"),
             std::path::PathBuf::from("~notahome")
         );
+    }
+
+    #[test]
+    fn loose_tabs_resolve_before_groups_with_none_group() {
+        let src = r#"
+[[window]]
+title = "W"
+  [[window.tab]]
+  title = "Loose"
+  dir = "/tmp"
+  [[window.group]]
+  name = "G"
+    [[window.group.tab]]
+    title = "Grouped"
+    dir = "/usr"
+"#;
+        let cfg = parse_and_validate(src).unwrap().0;
+        let views = cfg.windows[0].tab_views();
+        assert_eq!(views[0].title, "Loose");
+        assert_eq!(views[0].group, None);
+        assert_eq!(views[1].title, "Grouped");
+        assert_eq!(views[1].group.as_deref(), Some("G"));
+    }
+
+    #[test]
+    fn label_is_the_canonicalized_dir_hash_so_retitling_is_free() {
+        // The spec's identity rule: identity is the hash of the canonicalized repo dir, NOT the
+        // title. Retitling must not remap the webview.
+        let a = parse_and_validate(
+            "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"Before\"\ndir = \"/tmp\"\n",
+        )
+        .unwrap()
+        .0;
+        let b = parse_and_validate(
+            "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"After\"\ndir = \"/tmp\"\n",
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            a.windows[0].tab_views()[0].label,
+            b.windows[0].tab_views()[0].label,
+            "retitling a tab must not change its label"
+        );
+    }
+
+    #[test]
+    fn two_spellings_of_one_dir_share_a_label() {
+        // Canonicalization is what makes identity a property of the *repo*, not of how the config
+        // spelled its path. `/tmp/.` and `/tmp` are the same repo.
+        let a = parse_and_validate(
+            "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"A\"\ndir = \"/tmp\"\n",
+        )
+        .unwrap()
+        .0;
+        let b = parse_and_validate(
+            "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"A\"\ndir = \"/tmp/.\"\n",
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            a.windows[0].tab_views()[0].label,
+            b.windows[0].tab_views()[0].label
+        );
+    }
+
+    #[test]
+    fn label_is_stable_when_a_tab_is_inserted_before_it() {
+        let base = parse_and_validate(VALID).unwrap().0;
+        let first = base.windows[0]
+            .tab_views()
+            .into_iter()
+            .find(|t| t.title == "compositor")
+            .unwrap()
+            .label;
+        let src = r#"
+[[window]]
+title = "Docs"
+  [[window.tab]]
+  title = "New"
+  dir = "/tmp"
+  [[window.tab]]
+  title = "homelab"
+  dir = "~/Developer/homelab"
+  [[window.group]]
+  name = "tools"
+    [[window.group.tab]]
+    title = "compositor"
+    dir = "~/Developer/compositor"
+"#;
+        let inserted = parse_and_validate(src).unwrap().0;
+        let after = inserted.windows[0]
+            .tab_views()
+            .into_iter()
+            .find(|t| t.title == "compositor")
+            .unwrap();
+        assert_eq!(
+            after.label, first,
+            "a tab's label must not change when a tab is inserted before it"
+        );
+    }
+
+    #[test]
+    fn duplicate_dirs_get_distinct_labels() {
+        // A repeated dir warns (not errors), so the labels must still disambiguate or the two tabs
+        // would share one webview.
+        let src = "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"A\"\ndir = \"/tmp\"\n[[window.tab]]\ntitle = \"B\"\ndir = \"/tmp\"\n";
+        let cfg = parse_and_validate(src).unwrap().0;
+        let views = cfg.windows[0].tab_views();
+        assert_ne!(views[0].label, views[1].label);
+    }
+
+    #[test]
+    fn startup_label_honours_open_on_launch() {
+        let blank = parse_and_validate(VALID).unwrap().0;
+        assert_eq!(blank.windows[0].startup_label(), None);
+
+        let first = parse_and_validate(&format!("{VALID}\n")).unwrap().0;
+        let src = VALID.replace(
+            "title = \"Docs\"",
+            "title = \"Docs\"\nopen_on_launch = true",
+        );
+        let eager = parse_and_validate(&src).unwrap().0;
+        assert_eq!(
+            eager.windows[0].startup_label(),
+            Some(first.windows[0].tab_views()[0].label.clone())
+        );
+
+        let src = VALID.replace(
+            "title = \"Docs\"",
+            "title = \"Docs\"\nopen_on_launch = \"compositor\"",
+        );
+        let named = parse_and_validate(&src).unwrap().0;
+        let want = first.windows[0]
+            .tab_views()
+            .into_iter()
+            .find(|v| v.title == "compositor")
+            .unwrap()
+            .label;
+        assert_eq!(named.windows[0].startup_label(), Some(want));
     }
 }

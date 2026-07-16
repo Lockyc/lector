@@ -297,6 +297,33 @@ pub fn expand_tilde(dir: &str) -> std::path::PathBuf {
     }
 }
 
+pub fn load_config(path: &std::path::Path) -> Result<(Config, Vec<Warning>), ConfigError> {
+    let src = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
+    parse_and_validate(&src)
+}
+
+/// Config path to load at launch: `$LECTOR_CONFIG` if set, else [`default_config_path`].
+///
+/// The env override lets `just run` point at the repo's `examples/config.toml` so iterating on
+/// lector never touches the developer's real `~/.config/lector/config.toml`.
+pub fn resolve_config_path() -> std::path::PathBuf {
+    std::env::var_os("LECTOR_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_config_path)
+}
+
+/// Default config location: `~/.config/lector/config.toml`.
+///
+/// Deliberately `~/.config` (not `dirs::config_dir()`, which on macOS is
+/// `~/Library/Application Support`) so the config slots into the dotfiles bare-repo workflow.
+pub fn default_config_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".config")
+        .join("lector")
+        .join("config.toml")
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TabView {
     pub label: String,
@@ -746,5 +773,51 @@ title = "Docs"
             .unwrap()
             .label;
         assert_eq!(named.windows[0].startup_label(), Some(want));
+    }
+
+    #[test]
+    fn load_config_reads_a_file() {
+        let tmp = std::env::temp_dir().join(format!("lector-load-{}.toml", std::process::id()));
+        std::fs::write(&tmp, VALID).unwrap();
+        let (cfg, _warnings) = load_config(&tmp).unwrap();
+        assert_eq!(cfg.windows[0].title, "Docs");
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_config_missing_file_is_an_io_error() {
+        let err = load_config(std::path::Path::new("/definitely/not/here.toml")).unwrap_err();
+        assert!(matches!(err, ConfigError::Io(_)));
+    }
+
+    #[test]
+    fn resolve_config_path_honours_env_override() {
+        // NB: mutates process env — not thread-safe under a parallel runner, and a hard error on
+        // edition 2024. The crate stays on 2021 (see Cargo.toml).
+        std::env::set_var("LECTOR_CONFIG", "/tmp/x.toml");
+        assert_eq!(
+            resolve_config_path(),
+            std::path::PathBuf::from("/tmp/x.toml")
+        );
+        std::env::remove_var("LECTOR_CONFIG");
+        assert_eq!(resolve_config_path(), default_config_path());
+    }
+
+    #[test]
+    fn default_config_path_is_dot_config_not_library() {
+        let p = default_config_path();
+        assert!(p.ends_with(".config/lector/config.toml"), "{}", p.display());
+    }
+
+    #[test]
+    fn bundled_example_config_parses() {
+        // Compile-time path dependency on the repo root — `just run` and `just gate` both point at
+        // this file, so a config that doesn't parse must fail the build, not the app launch.
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/config.toml"
+        ));
+        let (cfg, _warnings) = parse_and_validate(src).unwrap();
+        assert!(!cfg.windows.is_empty());
     }
 }

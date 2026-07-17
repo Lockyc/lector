@@ -1,5 +1,7 @@
 use lector_config::hash::fnv1a_64;
 
+pub mod servers;
+
 /// Filename for the window-state plugin's saved bounds, scoped per config file. The plugin keys
 /// window state by Tauri label *within one file*; two different configs can reuse a window title,
 /// so scope the filename by a stable hash of the (canonicalized) config path to keep their bounds

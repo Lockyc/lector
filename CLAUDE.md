@@ -83,6 +83,30 @@ lector also consumes the render/serve engine:
 All four are git dependencies, git-ignored/materialized, or `[patch]`-overridable for local dev
 — never vendor one in-tree.
 
+## The menu spine, home surface, and app-name strip — all shared, none app-specific here
+
+lector adopted shell-core's `menu::build_spine` and `home::{home_state, show_home, close_home}`,
+and chrome-core's `appName` field, from scratch — it never had its own menu, error window, or
+launcher to delete, so it's the cleanest case of the three apps consuming these.
+
+- **lector contributes no app-specific menu items.** The App, Config, and Window submenus are the
+  shared spine (`shell_core::menu::build_spine`, called in `lib.rs`'s `run()`); lector's own **Tab**
+  submenu holds nothing but the spine's `Close Tab` item (⌘W). curator's Tab submenu has Reload
+  Tab / Reset All Tabs / Open Developer Tools; warden's has digit-mode jumps and Reopen Last
+  Closed — lector needs none of that. **compositor's file watcher already live-reloads every open
+  tab on save**, so a manual "Reload Tab" item would be a no-op button; there is no per-tab
+  "session" to reset (a compositor `SiteServer` has no state beyond the served files); and DevTools
+  is one keystroke away regardless. The Tab submenu exists purely to hold ⌘W (the family's Close
+  Tab standard), not because lector has anything of its own to put there.
+- **The home surface** (`shell_core::home::HOME_LABEL`, `skip_labels` in `register_plugins`) is
+  what a fresh install shows: before this, lector built zero windows and no menu when
+  `~/.config/lector/config.toml` didn't exist, so it launched to a live, invisible, unrecoverable
+  process. Its "Create a starter config" button is `commands::shell_home_create_config`, calling
+  `config_core::write_default_config` with the tracked `src/default-config.toml` template.
+- **`appName: "lector"`** (`src/chrome.js`'s mount config) names the app in chrome-core's
+  `#cc-titlebar` strip beside the traffic lights; `src/chrome.css`'s `#sidebar` carries no
+  `padding-top` of its own — chrome-core owns that inset now.
+
 ## The `fnv1a_64` / `DefaultHasher` footgun
 
 `window_state_filename()` (keys `tauri-plugin-window-state`'s persisted-bounds file to the

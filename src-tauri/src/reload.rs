@@ -7,7 +7,7 @@
 //! this codebase avoids elsewhere (see the root CLAUDE.md's "one source of truth"). So `run()`'s
 //! setup and the hot-reload watcher both call [`reconcile`].
 
-use crate::commands::AppState;
+use crate::commands::{AppState, WindowMeta};
 use lector_config::{TabView, WindowConfig};
 use std::collections::HashSet;
 
@@ -41,6 +41,48 @@ pub fn reconcile(state: &AppState, windows: &[WindowConfig]) -> Vec<TabView> {
     }
 
     all_views
+}
+
+/// Project every window's fixed [`WindowMeta`] into the menu spine's / home surface's shared
+/// [`shell_core::menu::WindowEntry`] shape, re-checking each one's live `open` state against the
+/// running app (the one field `WindowMeta` deliberately doesn't cache, since it changes independent
+/// of config — a window closes and reopens with no reload involved).
+pub fn window_entries(
+    app: &tauri::AppHandle,
+    meta: &[WindowMeta],
+) -> Vec<shell_core::menu::WindowEntry> {
+    use tauri::Manager;
+    meta.iter()
+        .map(|m| shell_core::menu::WindowEntry {
+            id: m.id.clone(),
+            title: m.title.clone(),
+            open: app.get_window(&m.id).is_some(),
+            colour: m.colour.clone(),
+        })
+        .collect()
+}
+
+/// Show or close the home surface to match the current state — the other half of "the app is never
+/// stranded invisible," run after the initial load and after every hot-reload (both a clean one and
+/// a failed one, so a config edited from working into broken while every window happens to be closed
+/// still explains itself rather than going dark). `has_windows` is derived from `entries` itself
+/// (any window currently open) rather than taken as a separate argument — one fewer thing for a
+/// caller to get out of sync with the list it just built.
+pub fn reconcile_home(
+    app: &tauri::AppHandle,
+    entries: &[shell_core::menu::WindowEntry],
+    config_path: &str,
+    config_exists: bool,
+    load_error: Option<&str>,
+) {
+    let has_windows = entries.iter().any(|w| w.open);
+    match shell_core::home::home_state(has_windows, config_exists, config_path, load_error, entries)
+    {
+        Some(state) => {
+            let _ = shell_core::home::show_home(app, &state, "lector");
+        }
+        None => shell_core::home::close_home(app),
+    }
 }
 
 #[cfg(test)]

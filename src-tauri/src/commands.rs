@@ -33,11 +33,18 @@
 //!
 //! **Footgun:** the local/remote split (for this crate's own commands) is by *origin*, not by
 //! "chrome vs. anything else local" — it does not distinguish a second local-origin surface from
-//! the sidebar. If lector ever gains another `WebviewUrl::App` window sharing this command set
-//! (curator's error window is the precedent), that new surface would ride the same free pass the
-//! sidebar gets today and would need an explicit gate (a curator-style `is_chrome_caller`) to stay
-//! restricted. Content webviews staying `External` (as `webviews.rs` documents) is what keeps this
-//! safe for now.
+//! the sidebar. **This is no longer hypothetical**: the home surface (`shell_core::home`, wired in
+//! `lib.rs`) is exactly that second surface, serving `home.html` over its own registered
+//! `shell-home://` custom protocol — which `is_local_url` also classifies `Origin::Local` (Tauri
+//! treats any Builder-registered custom protocol as local; see `shell_core::home::HOME_SCHEME`'s
+//! own doc). It rides the same free pass the sidebar gets, reaching this crate's three
+//! `shell_home_*` commands with no per-caller gate. Accepted, not a bug to fix: unlike curator's
+//! hypothetical case, the home surface's HTML is fixed (bundled into shell-core, never
+//! user-supplied), so there is no untrusted content to isolate it from — the risk this footgun
+//! originally flagged (an attacker-controlled local surface) doesn't apply here. Content webviews
+//! staying `External` (as `webviews.rs` documents) is what keeps *that* risk closed; a real third
+//! local surface hosting anything other than fixed, shell-core-bundled content would need an
+//! explicit gate (a curator-style `is_chrome_caller`).
 
 use crate::servers::Servers;
 use lector_config::{Density, TabView};
@@ -45,6 +52,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+
+/// lector's starter config. Tracked, and `include_str!`'d so a missing/renamed template is a build
+/// error rather than a runtime surprise.
+const DEFAULT_CONFIG: &str = include_str!("../../src/default-config.toml");
 
 /// One row as the chrome controller consumes it. Deliberately flat and app-shaped — chrome-core has
 /// no Rust DTO; `src/chrome.js` maps this onto the component's TabDTO.
@@ -73,6 +84,20 @@ pub fn tab_dtos(views: &[TabView], servers: &Servers, active: Option<&str>) -> V
             active: active == Some(v.label.as_str()),
         })
         .collect()
+}
+
+/// A configured window's fixed identity — enough to rebuild it after the user closes it (the
+/// Window menu's reopen path) or to describe it to the menu spine / home surface. `id`/`title`/
+/// `colour` never change after launch (window blocks aren't added/removed by hot-reload — only
+/// tabs are, via `reload::reconcile`); `width`/`height` are its *initial* size, reused verbatim on
+/// a rebuild since Tauri doesn't remember a closed window's last size once it's gone.
+#[derive(Debug, Clone)]
+pub struct WindowMeta {
+    pub id: String,
+    pub title: String,
+    pub width: f64,
+    pub height: f64,
+    pub colour: Option<String>,
 }
 
 /// The app's managed state. One instance, registered with `.manage()` in `run()`.
@@ -110,6 +135,11 @@ pub struct AppState {
     sidebar_drag: AtomicBool,
     /// Whole-app `auto_update` from the config, set once at setup.
     auto_update: AtomicBool,
+    /// Every configured window's fixed identity (see [`WindowMeta`]), for the menu spine's Window
+    /// submenu and reopening a closed window from it. Grows as `lib.rs` builds windows (at launch,
+    /// and later via `reload_now`); never shrinks — a window that's closed stays in this list so it
+    /// can be rebuilt.
+    window_meta: Mutex<Vec<WindowMeta>>,
 }
 
 impl AppState {
@@ -122,6 +152,7 @@ impl AppState {
             density: Mutex::new(Density::default()),
             sidebar_drag: AtomicBool::new(true),
             auto_update: AtomicBool::new(true),
+            window_meta: Mutex::new(Vec::new()),
         }
     }
 
@@ -214,6 +245,19 @@ impl AppState {
         *self.density.lock().expect("density lock") = density;
         self.sidebar_drag.store(sidebar_drag, Ordering::Relaxed);
         self.auto_update.store(auto_update, Ordering::Relaxed);
+    }
+
+    /// Every window built so far, in build order. Clones — callers get a snapshot, never a lock
+    /// held across their own work (the menu spine and `reload_now` both hold this while calling
+    /// back into Tauri APIs that could otherwise re-enter).
+    pub fn window_meta(&self) -> Vec<WindowMeta> {
+        self.window_meta.lock().expect("window_meta lock").clone()
+    }
+
+    /// Replace the whole window-meta list. Callers build the new list starting from
+    /// [`window_meta`](Self::window_meta) (append-only in practice — see the field's own doc).
+    pub fn set_window_meta(&self, meta: Vec<WindowMeta>) {
+        *self.window_meta.lock().expect("window_meta lock") = meta;
     }
 }
 
@@ -364,6 +408,43 @@ pub fn set_hole_rect(rect: RectArg, window: tauri::Window) -> Result<(), String>
         },
     );
     Ok(())
+}
+
+/// The home surface's "Create a starter config" button. This is where config-core is called (via
+/// `lector_config`'s re-export — this crate never pins config-core directly, the same one-source
+/// rule as its other re-exported house helpers) — shell-core owns the surface but never touches
+/// config-core (the cores stay independent).
+#[tauri::command]
+pub fn shell_home_create_config(app: tauri::AppHandle) -> Result<(), String> {
+    let path = lector_config::resolve_config_path();
+    match lector_config::write_default_config(&path, DEFAULT_CONFIG) {
+        // A config already existed — say so rather than report a success that didn't happen.
+        Ok(false) => Err(format!(
+            "{} already exists — left untouched",
+            path.display()
+        )),
+        Ok(true) => {
+            crate::reload_now(&app);
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The home surface's "Edit Config" button (shown for a `Broken` config). Reuses the spine's own
+/// Edit Config action rather than a second `open` spawn — same one-source-of-truth reason the menu
+/// handler consumes `handle_spine_event` first.
+#[tauri::command]
+pub fn shell_home_edit_config() {
+    let path = lector_config::resolve_config_path();
+    shell_core::menu::handle_spine_event(shell_core::menu::ids::EDIT_CONFIG, &path);
+}
+
+/// The home surface's per-window button (shown for the `Windows` list state): open, or focus if
+/// already open. Same path the menu spine's Window submenu uses for the same id.
+#[tauri::command]
+pub fn shell_home_open_window(id: String, app: tauri::AppHandle) {
+    crate::open_or_focus_window(&app, &id);
 }
 
 #[cfg(test)]

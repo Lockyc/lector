@@ -3,7 +3,9 @@
 //! The house-style TOML formatter + colour parsing are shared with warden and curator via the
 //! config-core crate, re-exported here so the app (`src-tauri`) uses
 //! `lector_config::{Colour, format_file, format_str}`.
-pub use config_core::{fmt_cli, format_file, format_str, Colour, ColourError};
+pub use config_core::{
+    fmt_cli, format_file, format_str, write_default_config, Colour, ColourError, SeedError,
+};
 
 pub mod hash;
 pub mod identity;
@@ -302,14 +304,19 @@ pub fn load_config(path: &std::path::Path) -> Result<(Config, Vec<Warning>), Con
     parse_and_validate(&src)
 }
 
-/// Config path to load at launch: `$LECTOR_CONFIG` if set, else [`default_config_path`].
+/// This app's env override for the config path.
+const CONFIG_ENV: &str = "LECTOR_CONFIG";
+/// This app's `~/.config` subdirectory.
+const CONFIG_DIR: &str = "lector";
+
+/// Config path to load at launch: `$LECTOR_CONFIG` if set and non-empty, else
+/// [`default_config_path`]. Shared with warden and curator via config-core — including the
+/// set-but-empty fall-through, which this app previously got wrong.
 ///
 /// The env override lets `just run` point at the repo's `examples/config.toml` so iterating on
 /// lector never touches the developer's real `~/.config/lector/config.toml`.
 pub fn resolve_config_path() -> std::path::PathBuf {
-    std::env::var_os("LECTOR_CONFIG")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(default_config_path)
+    config_core::resolve_config_path(CONFIG_ENV, CONFIG_DIR)
 }
 
 /// Default config location: `~/.config/lector/config.toml`.
@@ -317,11 +324,7 @@ pub fn resolve_config_path() -> std::path::PathBuf {
 /// Deliberately `~/.config` (not `dirs::config_dir()`, which on macOS is
 /// `~/Library/Application Support`) so the config slots into the dotfiles bare-repo workflow.
 pub fn default_config_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".config")
-        .join("lector")
-        .join("config.toml")
+    config_core::default_config_path(CONFIG_DIR)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -807,6 +810,16 @@ title = "Docs"
     fn default_config_path_is_dot_config_not_library() {
         let p = default_config_path();
         assert!(p.ends_with(".config/lector/config.toml"), "{}", p.display());
+    }
+
+    #[test]
+    fn a_set_but_empty_env_var_falls_through_to_the_default() {
+        // lector shipped the bug this fixes: `var_os(..).map(PathBuf::from)` turned an empty
+        // LECTOR_CONFIG into PathBuf::from(""), whose only symptom was
+        // "cannot read config: No such file or directory".
+        std::env::set_var("LECTOR_CONFIG", "");
+        assert_eq!(resolve_config_path(), default_config_path());
+        std::env::remove_var("LECTOR_CONFIG");
     }
 
     #[test]

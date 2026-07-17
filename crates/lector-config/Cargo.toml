@@ -12,4 +12,4 @@ dirs = "5"
 # the shared formatter must format identically in all three apps, so an unpinned dep floating forward
 # in only one repo would silently diverge `lector fmt` from its siblings. This rev MUST match
 # curator's and warden's; bump all three in lockstep.
-config-core = { git = "https://github.com/Lockyc/config-core", rev = "3c7d79565d30aa835b74f93716b39f7e302594f6" }
+config-core = { git = "https://github.com/Lockyc/config-core", rev = "14334ec030986313e5bfb56085eaed8438e5c404" }

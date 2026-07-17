@@ -15,9 +15,10 @@ html, body { margin: 0; height: 100vh; overflow: hidden; background: #1e1e1e; } 
 
 /* chrome-core mount container. `width` is the resize-controlled sidebar width (set inline by the
    controller's onResize; 240px here is chrome.js's own default-width fallback — see its comment).
-   `padding-top` clears the floating traffic lights (full-size Overlay content view). chrome-core
-   adds `.cc-root`. */
-#sidebar { width: 240px; flex: none; padding-top: 28px; }
+   No padding-top here: chrome-core's own `#cc-titlebar` strip (driven by the `appName` mount
+   config) now owns the traffic-lights zone — double-reserving it here would push the app name
+   below the lights instead of beside them. chrome-core adds `.cc-root`. */
+#sidebar { width: 240px; flex: none; }
 
 /* The content hole the content webviews cover; visible only where none does (→ #empty-state). */
 #content-hole { flex: 1; position: relative; background: #1e1e1e; }

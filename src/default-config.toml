@@ -1,0 +1,22 @@
+# lector config — one tab per doc repo, rendered live off disk.
+# Edit and save; lector hot-reloads.
+
+dark_mode = true
+
+[[window]]
+  title = "Docs"
+
+  # A tab is a repo path — compositor works out the rest (docs/ if present, else the dir
+  # itself; a README is promoted to the home page). `load_on_open` starts that repo's server
+  # at launch, so its sidebar dot is green before you click it.
+  # [[window.tab]]
+  #   title        = "my-project"
+  #   dir          = "~/src/my-project"
+  #   load_on_open = true
+
+  # Groups render as labelled sidebar sections. Loose tabs (above) come first.
+  # [[window.group]]
+  #   name = "tools"
+  #   [[window.group.tab]]
+  #     title = "some-tool"
+  #     dir   = "~/src/some-tool"

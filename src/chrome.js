@@ -118,6 +118,15 @@ async function refresh() {
   reportRect();
 }
 
+// Shared by chrome-core's own row-unload control (onUnload below) and the ⌘W menu shortcut's
+// "close-tab" event (below) — both mean the same thing (unload the active/given tab to cold), so
+// this is the one place that does it rather than two copies.
+async function unloadTab(tabId) {
+  await invoke("unload_tab", { label: tabId }).catch(() => {});
+  // Re-render so the highlight + loaded dots follow the new state (get_tabs carries it).
+  await refresh();
+}
+
 async function mountChrome() {
   const id = await invoke("window_identity");
   const title = (id && id.title) || "";
@@ -139,11 +148,7 @@ async function mountChrome() {
         // it. Either rejection surfaces in the chrome's error bar — see this file's header note.
         invoke(wasActive ? "home_tab" : "select_tab", { label: tabId }).catch((e) => sb.setError(String(e)));
       },
-      async onUnload(tabId) {
-        await invoke("unload_tab", { label: tabId }).catch(() => {});
-        // Re-render so the highlight + loaded dots follow the new state (get_tabs carries it).
-        await refresh();
-      },
+      onUnload: unloadTab,
       onResize(width) {
         // The chrome is the window's full-size main webview: the sidebar's visible width is CSS
         // (set here); the flex #content-hole follows, and reportRect tells Rust where to put the
@@ -158,6 +163,7 @@ async function mountChrome() {
     },
     {
       header: buildNavPill(),
+      appName: "lector",
       storageKey: "lector:sidebar-width:" + title,
       defaultWidth,
       minWidth: MIN_W,
@@ -223,6 +229,12 @@ listen("config-reloaded", () => {
 });
 listen("config-error", (event) => {
   if (sb) sb.setError(String(event.payload));
+});
+
+// The menu spine's ⌘W (Tab ▸ Close Tab): unloads whichever tab is active in THIS window. lib.rs
+// routes it via emit_to_focused_chrome, so only the focused window's chrome receives it.
+listen("close-tab", () => {
+  if (activeLabel) unloadTab(activeLabel);
 });
 
 mountChrome();

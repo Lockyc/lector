@@ -11,13 +11,14 @@ lector curates local documentation the same way.
 
 ## Status
 
-**Work in progress — not yet usable.** `cargo build` succeeds and `just run` launches a window,
-but there's no sidebar or doc rendering yet: `crates/lector-config` (parsing/validation) and
-`src-tauri`'s app shell (plugin registration, the `validate`/`fmt` CLI, window-state persistence)
-are written, while the `SiteServer` supervisor, the chrome controller, and Tauri commands are
-not. Follow this repo's commit history for progress.
+**Complete and functional end-to-end, not yet released.** The full app works: the config
+parser/validator/formatter, the `Servers` supervisor (one live `compositor serve` per open tab),
+the sidebar chrome and its commands, content-webview link escape, config hot-reload, and the
+`validate`/`fmt` CLI are all built and tested. Two things are deliberately deferred to the
+release task: `src-tauri/icons/` still holds a placeholder icon, and the in-app updater's
+minisign keypair hasn't been minted yet (its build-time permission to run is already wired).
 
-## Model (intended)
+## Model
 
 - **`config.toml` is the source of truth**, in the same shape as curator's and warden's: one or
   more `[[window]]` blocks, each containing loose `[[window.tab]]` entries and/or

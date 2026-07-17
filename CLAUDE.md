@@ -139,8 +139,10 @@ core:event:allow-listen, core:event:default"`. The sidebar's `data-tauri-drag-re
 `sidebar_drag` config flag) was equally broken, needing `core:window:allow-start-dragging`. The fix
 is `src-tauri/capabilities/default.json`, granting the sidebar (`windows: ["*"]`, `webviews:
 ["*"]`, no `remote` block — content webviews are `Origin::Remote` and never match) exactly
-`core:event:allow-listen`/`allow-unlisten` and `core:window:allow-start-dragging`/
-`allow-internal-toggle-maximize`.
+`core:event:allow-listen`/`allow-unlisten`, `core:window:allow-start-dragging`/
+`allow-internal-toggle-maximize`, and the updater's `updater:default`/`process:allow-restart`
+— the last two being exactly what the direct-dependency entries below exist to make
+discoverable.
 
 **`src-tauri/Cargo.toml`'s `tauri-plugin-updater`/`tauri-plugin-process` entries are load-bearing
 despite nothing in this crate calling them — do not delete them as dead weight.** Registration flows
@@ -228,6 +230,14 @@ demand the signing key and break the keyless path.
 **generated, git-ignored** — materialized by `src-tauri/build.rs` from the pinned shell-core
 rev. **Edit them in shell-core, never here**; a local edit is silently overwritten on the next
 build. The tracked `scripts/tooling.env` is the only per-app input they read.
+
+## Deferred work
+
+Conscious deferrals are tracked in [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md) — the outstanding
+first-release prerequisites (`main` doesn't exist yet; the updater endpoint 404s until a
+release lands), the installer trio deferred to land *with* that release, the GitHub repo
+surface, and why a lagging compositor pin is a decision rather than a defect. **Consult it
+before "fixing" a gap you've just noticed** — it may be a recorded deferral with a reason.
 
 ## The public repo
 

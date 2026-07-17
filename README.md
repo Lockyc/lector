@@ -1,4 +1,14 @@
-# lector
+<p align="center">
+  <img src="src-tauri/icons/icon.png" alt="lector app icon" width="128" height="128">
+</p>
+
+<h1 align="center">lector</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white" alt="Platform: macOS">
+  <img src="https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?logo=tauri&logoColor=white" alt="Built with Tauri v2">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Lockyc/lector" alt="License: MIT"></a>
+</p>
 
 A macOS console of grouped tabs over locally-rendered documentation sites. One tab is one doc
 repo on disk: selecting it starts a live-reloading server on an ephemeral loopback port and
@@ -14,9 +24,9 @@ lector curates local documentation the same way.
 **Complete and functional end-to-end, not yet released.** The full app works: the config
 parser/validator/formatter, the `Servers` supervisor (one live `compositor serve` per open tab),
 the sidebar chrome and its commands, content-webview link escape, config hot-reload, and the
-`validate`/`fmt` CLI are all built and tested. Two things are deliberately deferred to the
-release task: `src-tauri/icons/` still holds a placeholder icon, and the in-app updater's
-minisign keypair hasn't been minted yet (its build-time permission to run is already wired).
+`validate`/`fmt` CLI are all built and tested. The in-app minisign-signed updater is fully
+wired. One thing is deliberately deferred to the release task: `src-tauri/icons/` still holds
+a placeholder icon.
 
 ## Model
 

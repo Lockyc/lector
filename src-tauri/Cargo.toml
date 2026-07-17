@@ -23,7 +23,9 @@ shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "ca4e728aa275
 
 [dependencies]
 lector-config = { path = "../crates/lector-config" }
-tauri = { version = "2", features = [] }
+# "unstable" is LOAD-BEARING: Window::add_child (the content-webview creation primitive
+# webviews.rs uses to composite a tab's page above the sidebar chrome) is gated behind it.
+tauri = { version = "2", features = ["unstable"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 notify = "6"

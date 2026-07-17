@@ -8,10 +8,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-/// One live site.
+/// One live site. `handle` is `None` only for a registry entry that a panicked serve thread has
+/// left behind (see [`Servers::register_unserved_for_test`]) — a real `start()` always inserts
+/// `Some`. Modeling it as optional here is what makes the dead-registration state constructible
+/// for `reap`'s test without bending the production type.
 struct SiteServer {
     port: u16,
-    handle: ServeHandle,
+    handle: Option<ServeHandle>,
 }
 
 /// The registry of live servers, keyed by `TabView::label`. A label absent from the map is a cold
@@ -55,14 +58,28 @@ impl Servers {
             if let Some(s) = live.get(label) {
                 // Another thread won the race while we were building. Keep the winner, discard
                 // ours — but not under the lock (see the doc comment above).
-                Some((s.port, SiteServer { port, handle }))
+                Some((
+                    s.port,
+                    SiteServer {
+                        port,
+                        handle: Some(handle),
+                    },
+                ))
             } else {
-                live.insert(label.to_string(), SiteServer { port, handle });
+                live.insert(
+                    label.to_string(),
+                    SiteServer {
+                        port,
+                        handle: Some(handle),
+                    },
+                );
                 None
             }
         };
         if let Some((winner_port, ours)) = loser {
-            ours.handle.shutdown();
+            if let Some(h) = ours.handle {
+                h.shutdown();
+            }
             return Ok(winner_port);
         }
         Ok(port)
@@ -76,23 +93,34 @@ impl Servers {
             .map(|s| s.port)
     }
 
+    /// Raw registry membership — "did `start()` register this label", with no liveness probe.
+    /// `is_alive` (below) is what `commands::tab_dtos` actually uses for the sidebar's `live` dot
+    /// (it probes the port too, which is the whole point of dead-thread detection); this one stays
+    /// a public primitive in its own right, exercised directly by this module's own tests (e.g.
+    /// `reap_drops_a_registered_tab_whose_server_stopped_answering` asserts the registry believes a
+    /// dead tab is live via this exact method, before `reap` corrects it).
+    #[allow(dead_code)] // no non-test caller yet — a deliberately-kept lower-level primitive
     pub fn is_live(&self, label: &str) -> bool {
         self.live.lock().expect("servers lock").contains_key(label)
     }
 
-    /// Stop one tab's server, joining its threads.
+    /// Stop one tab's server, joining its threads. A no-op on the handle for an entry `reap` (or
+    /// the test constructor) already left with no `ServeHandle` — there is nothing to shut down.
     pub fn stop(&self, label: &str) {
         let removed = self.live.lock().expect("servers lock").remove(label);
         // Shut down outside the lock: shutdown() joins two threads, and holding the registry lock
         // across a join would block every other tab's start/select for its duration.
         if let Some(s) = removed {
-            s.handle.shutdown();
+            if let Some(h) = s.handle {
+                h.shutdown();
+            }
         }
     }
 
     /// Stop every server whose label is not in `keep`. Called on config hot-reload: a removed tab
     /// must have its server shut down and threads joined, or every config edit leaks a watcher and
     /// a port.
+    #[allow(dead_code)] // Task 10 (config hot-reload) is the caller; this task builds no reload path
     pub fn retain(&self, keep: &HashSet<String>) {
         let dropped: Vec<SiteServer> = {
             let mut live = self.live.lock().expect("servers lock");
@@ -104,11 +132,14 @@ impl Servers {
             gone.iter().filter_map(|l| live.remove(l)).collect()
         };
         for s in dropped {
-            s.handle.shutdown();
+            if let Some(h) = s.handle {
+                h.shutdown();
+            }
         }
     }
 
     /// Stop everything, joining all threads. Called on quit.
+    #[allow(dead_code)] // Task 10 (quit shutdown) is the caller; this task wires no quit handler
     pub fn shutdown_all(&self) {
         let all: Vec<SiteServer> = self
             .live
@@ -118,8 +149,57 @@ impl Servers {
             .map(|(_, s)| s)
             .collect();
         for s in all {
-            s.handle.shutdown();
+            if let Some(h) = s.handle {
+                h.shutdown();
+            }
         }
+    }
+}
+
+/// Does anything answer on this loopback port? The liveness primitive, split out as a free
+/// function so it is directly testable against a port nobody is serving — a dead serve thread is
+/// indistinguishable, from the outside, from a port that was never bound.
+///
+/// A closed loopback port refuses immediately (RST), so the timeout only bites on a black-holed
+/// port, which does not happen on loopback. The refresh path can afford this per tab.
+fn port_answers(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_millis(50),
+    )
+    .is_ok()
+}
+
+impl Servers {
+    /// True iff this tab's server is registered AND still answering. A panic in the serve loop
+    /// kills that thread silently (compositor's FOLLOWUPS records this: the loop is one
+    /// background thread among N here, so a panic doesn't abort the process — it just stops that
+    /// site). The registry alone would still report `live`, so probe the port before believing it.
+    pub fn is_alive(&self, label: &str) -> bool {
+        self.port(label).is_some_and(port_answers)
+    }
+
+    /// Drop any tab whose server has died, so the chrome's `live` dot goes hollow and re-selecting
+    /// retries. Called on each chrome refresh (`get_tabs`).
+    pub fn reap(&self) {
+        let registered: Vec<String> = {
+            let live = self.live.lock().expect("servers lock");
+            live.keys().cloned().collect()
+        };
+        for label in registered.into_iter().filter(|l| !self.is_alive(l)) {
+            self.stop(&label);
+        }
+    }
+
+    /// Register a port with no server behind it — the state a panicked serve loop leaves (the
+    /// registry still lists the label, but nothing answers on its port). Test-only: production
+    /// code always inserts through `start()`, which never registers a `None` handle.
+    #[cfg(test)]
+    fn register_unserved_for_test(&self, label: &str, port: u16) {
+        self.live
+            .lock()
+            .expect("servers lock")
+            .insert(label.to_string(), SiteServer { port, handle: None });
     }
 }
 
@@ -350,6 +430,62 @@ mod tests {
         assert!(!s.is_live("t2"));
         std::fs::remove_dir_all(&a).ok();
         std::fs::remove_dir_all(&b).ok();
+    }
+
+    #[test]
+    fn port_answers_only_while_something_serves() {
+        // The liveness primitive. A port nobody serves is exactly what a died-in-the-night serve
+        // thread leaves behind — indistinguishable from outside, which is why this is the probe.
+        let dir = scratch("answers");
+        let s = Servers::new();
+        let port = s.start("t1", &dir).unwrap();
+        assert!(port_answers(port), "a live server must answer");
+
+        s.stop("t1");
+        // The listener frees on tiny_http's schedule (its accept thread is signalled, not
+        // joined), so poll rather than assert once — the same asynchrony compositor's own test
+        // hit.
+        let stopped = (0..100).any(|_| {
+            if !port_answers(port) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        });
+        assert!(stopped, "a stopped server must stop answering");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn is_alive_is_false_for_an_unregistered_tab() {
+        let s = Servers::new();
+        assert!(!s.is_alive("never-started"));
+    }
+
+    #[test]
+    fn reap_drops_a_registered_tab_whose_server_stopped_answering() {
+        // The spec's requirement, and the compositor follow-up it graduates: a serve thread that
+        // dies must drop the live dot rather than leave the tab looking live. Registering a port
+        // that nothing serves reproduces exactly the state a panicked serve loop leaves — the
+        // registry says live, the port says otherwise.
+        let s = Servers::new();
+        let dead_port = {
+            // Bind and immediately drop, so the port is real but unserved.
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        s.register_unserved_for_test("ghost", dead_port);
+        assert!(s.is_live("ghost"), "the registry believes it is live");
+        assert!(
+            !s.is_alive("ghost"),
+            "but nothing answers, so it is not alive"
+        );
+
+        s.reap();
+        assert!(
+            !s.is_live("ghost"),
+            "reap must drop a tab whose server died"
+        );
     }
 
     #[test]

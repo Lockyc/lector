@@ -1,6 +1,9 @@
 use lector_config::hash::fnv1a_64;
+use tauri::Manager;
 
-pub mod servers;
+mod commands;
+mod servers;
+mod webviews;
 
 /// Filename for the window-state plugin's saved bounds, scoped per config file. The plugin keys
 /// window state by Tauri label *within one file*; two different configs can reuse a window title,
@@ -24,9 +27,63 @@ fn window_state_filename() -> String {
     format!(".window-state-{hash:016x}.json")
 }
 
+/// Print config-load warnings to stderr. Shared shape with `validate_cli`'s own printing (kept
+/// separate rather than factored together — that one also prints the resolved tab tree, this one
+/// only ever prints warnings).
+fn log_config_warnings(warnings: &[lector_config::Warning]) {
+    for w in warnings {
+        eprintln!("config warning [{}]: {}", w.window, w.message);
+    }
+}
+
 pub fn run() {
     shell_core::register_plugins(tauri::Builder::default(), window_state_filename(), &[])
-        .setup(move |_app| Ok(()))
+        .manage(commands::AppState::new())
+        .setup(move |app| {
+            let path = lector_config::resolve_config_path();
+            let (cfg, warnings) = match lector_config::load_config(&path) {
+                Ok((c, warnings)) => (c, warnings),
+                Err(e) => {
+                    eprintln!("config error: {e}");
+                    (lector_config::Config::default(), Vec::new())
+                }
+            };
+            log_config_warnings(&warnings);
+
+            let state = app.state::<commands::AppState>();
+            state.set_global(cfg.density, cfg.sidebar_drag, cfg.auto_update);
+
+            // Build every configured window, all cold: nothing is auto-started at launch (no
+            // eager load_on_open, no open_on_launch active-tab selection) — that eager-start
+            // wiring is Task 10's concern (it shares config hot-reload's reconciliation code, and
+            // duplicating a slice of it here just to throw it away on the first reload would be
+            // exactly the shadow the codebase avoids elsewhere). Every tab starts cold; the user's
+            // first click is what starts a server and creates its webview.
+            let mut all_views = Vec::new();
+            for win_cfg in &cfg.windows {
+                let wid = lector_config::identity::window_id(&win_cfg.title);
+                webviews::build_window(
+                    app.handle(),
+                    &wid,
+                    &win_cfg.title,
+                    win_cfg.width as f64,
+                    win_cfg.height as f64,
+                )?;
+                state.set_colour(&wid, win_cfg.colour.clone());
+                all_views.extend(win_cfg.tab_views());
+            }
+            state.set_views(all_views);
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_tabs,
+            commands::window_identity,
+            commands::select_tab,
+            commands::unload_tab,
+            commands::home_tab,
+            commands::set_hole_rect,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running lector");
 }

@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/lector-config"]
-# src-tauri added in Task 5
+members = ["src-tauri", "crates/lector-config"]
 
 # ── shared-core local-dev overrides (managed by `just chrome-dev`/`chrome-pin`, `config-dev`/`config-pin`, `shell-dev`/`shell-pin`, `compositor-dev`/`compositor-pin`) ──
 # Leave COMMENTED in git — an active path patch builds green for you but is unresolvable for every

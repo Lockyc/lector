@@ -11,12 +11,19 @@ lector curates local documentation.
 
 ## Current state vs intended architecture
 
-**This repo currently contains only the baseline scaffold** — the workspace root, the
-shared-core `[patch]` machinery, the toolchain pin, `just` recipes, and hooks. No application
-code exists yet: `src-tauri/` and `crates/lector-config/` are declared as workspace members but
-not yet written, so `cargo build` / `cargo check` currently error on missing manifests. That is
-expected at this stage, not a bug — treat every reference below to those crates as the intended
-shape, not a claim that it's built yet.
+**The workspace now builds.** `crates/lector-config` is complete (parse/validate/format/identity,
+unit-tested standalone). `src-tauri` has the app shell: the manifest pinning all four cores, a
+`build.rs` that stamps the build and materializes chrome-core's CSS/JS + shell-core's release
+scripts, a `tauri.conf.json`, `window_state_filename()` (scopes the window-state plugin's saved
+bounds per config file), `run()` (registers plugins via `shell_core::register_plugins` and opens
+generate_context! with no further setup yet), and the `validate`/`fmt` CLI subcommands. **Not yet
+built**: the sidebar chrome wiring (`src/chrome.js`/`chrome.css`, referenced by `src/index.html`
+but not yet written), the `SiteServer` supervisor that runs one `compositor::serve_handle()` per
+open tab, the Tauri commands the chrome calls, and config hot-reload — `run()`'s `setup` closure
+is a no-op stub these later tasks extend. Two placeholders pending later tasks: `src-tauri/icons/`
+holds a generic placeholder icon (not lector's real brand art), and `tauri.conf.json`'s updater
+`pubkey` is the literal string `REPLACE_WITH_TASK_12_MINISIGN_PUBKEY` (the real minisign keypair
+is minted, and its private half + password vaulted, when the release/updater task lands).
 
 The intended shape mirrors curator's: a Cargo workspace with a platform-neutral config crate
 (`crates/lector-config` — parse/validate/format/identity, no Tauri deps, unit-tested standalone)
@@ -26,15 +33,14 @@ commands, config hot-reload.
 
 ## Workspace layout
 
-- **`src-tauri/`** — the macOS Tauri app (not yet written): windows, the `SiteServer`
-  supervisor (one `compositor::serve_handle()` per open tab, each bound to its own ephemeral
-  loopback port), the chrome controller, commands, config hot-reload.
-- **`crates/lector-config/`** — the config parser (not yet written), extracted into its own
-  platform-neutral crate like curator's `curator-config` / warden's `warden-config`: the
-  `window → group → tab` schema (a lector tab carries a `dir` — a local doc repo path — rather
-  than a `url`), `parse_and_validate` / `load_config`, `resolve_config_path`, identity/hash
-  helpers. Re-exports config-core's shared house formatter + colour parsing, the same way
-  curator/warden do.
+- **`src-tauri/`** — the macOS Tauri app: the manifest, `build.rs`, `tauri.conf.json`, plugin
+  registration, and the `validate`/`fmt` CLI are written; the `SiteServer` supervisor (one
+  `compositor::serve_handle()` per open tab, each bound to its own ephemeral loopback port), the
+  chrome controller, and commands are not yet.
+- **`crates/lector-config`** — the config parser: the `window → group → tab` schema (a lector tab
+  carries a `dir` — a local doc repo path — rather than a `url`), `parse_and_validate` /
+  `load_config`, `resolve_config_path`, identity/hash helpers. Re-exports config-core's shared
+  house formatter + colour parsing, the same way curator/warden do.
 
 The `[patch]` overrides for all four shared cores live in the **workspace-root `Cargo.toml`** (a
 `[patch]` must sit at the workspace root, not a member manifest) — see *The `[patch]` rule and
@@ -134,7 +140,7 @@ forward-merged back into `dev`. Never commit code directly to `main`.
 
 ## Release model
 
-Version lives in **`src-tauri/Cargo.toml`** (once it exists) — the single source of truth, like
+Version lives in **`src-tauri/Cargo.toml`** — the single source of truth, like
 curator's and warden's. Releases are notarized `.app` bundles with an in-app minisign-signed
 updater (`tauri-plugin-updater`), mirroring curator's and warden's release shape: bump the
 version, tag `v<version>`, fast-forward `main`, publish a GitHub release with notes, then attach

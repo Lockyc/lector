@@ -11,11 +11,11 @@ lector curates local documentation the same way.
 
 ## Status
 
-**Work in progress — not yet usable.** This repository currently holds only the workspace
-scaffold: the shared-core `[patch]` machinery, the toolchain pin, dev tooling, and hooks. No
-application code exists yet — `src-tauri/` and `crates/lector-config/` are declared as workspace
-members but not yet written, so `cargo build` currently errors on missing manifests. There is
-nothing to install or run yet; follow this repo's commit history for progress.
+**Work in progress — not yet usable.** `cargo build` succeeds and `just run` launches a window,
+but there's no sidebar or doc rendering yet: `crates/lector-config` (parsing/validation) and
+`src-tauri`'s app shell (plugin registration, the `validate`/`fmt` CLI, window-state persistence)
+are written, while the `SiteServer` supervisor, the chrome controller, and Tauri commands are
+not. Follow this repo's commit history for progress.
 
 ## Model (intended)
 
@@ -30,9 +30,6 @@ nothing to install or run yet; follow this repo's commit history for progress.
   render a doc repo's *working tree* as you edit it.
 
 ## Build / run / test
-
-Once the workspace has real crates (`src-tauri/`, `crates/lector-config/`), the usual `just`
-recipes apply:
 
 - `just run` — runs the app against the repo's demo config (`examples/config.toml`), never
   touching a real `~/.config/lector/config.toml`

@@ -1,0 +1,34 @@
+[package]
+name = "lector"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "lector_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lector"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+# The sidebar chrome: this crate is a thin include_str! wrapper, and build.rs writes the assets into
+# frontendDist before generate_context! embeds that dir.
+chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "723e57ecd0ee010d925021dd8a08b69adbad9dea" }
+# Zero-dep by default — build_stamp() + materialize_scripts() are all build.rs needs.
+# `default-features = false` is LOAD-BEARING: without it this build-dep drags in the whole tauri tree.
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "ca4e728aa275c2b7582234f9722fdae8818cae51", default-features = false }
+
+[dependencies]
+lector-config = { path = "../crates/lector-config" }
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "6"
+anyhow = "1"
+# The render engine. One serve loop per live tab; lector never renders anything itself.
+compositor = { git = "https://github.com/Lockyc/compositor", rev = "2b4872a3f166658f2f0fc3e39c064d6f476b8406" }
+# The Tauri runtime sliver: register_plugins (window-state, updater, process).
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "ca4e728aa275c2b7582234f9722fdae8818cae51", features = ["runtime"] }

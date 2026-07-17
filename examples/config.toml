@@ -1,23 +1,20 @@
 dark_mode = true
-density = "compact"
+density   = "compact"
 
 [[window]]
-title = "Docs"
-width = 1400
-height = 900
+  title  = "Docs"
+  width  = 1400
+  height = 900
+  [[window.tab]]
+    title        = "compositor"
+    dir          = "~/Developer/github.com/lockyc/compositor"
+    load_on_open = true
 
-[[window.tab]]
-title = "compositor"
-dir = "~/Developer/github.com/lockyc/compositor"
-load_on_open = true
-
-[[window.group]]
-name = "cores"
-
-[[window.group.tab]]
-title = "chrome-core"
-dir = "~/Developer/github.com/lockyc/chrome-core"
-
-[[window.group.tab]]
-title = "shell-core"
-dir = "~/Developer/github.com/lockyc/shell-core"
+  [[window.group]]
+    name = "cores"
+    [[window.group.tab]]
+      title = "chrome-core"
+      dir   = "~/Developer/github.com/lockyc/chrome-core"
+    [[window.group.tab]]
+      title = "shell-core"
+      dir   = "~/Developer/github.com/lockyc/shell-core"

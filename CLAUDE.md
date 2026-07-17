@@ -183,6 +183,21 @@ the notarized artifacts via `just release` (`scripts/release.sh`, generated from
 parameterized by the tracked `scripts/tooling.env`). There is no CI — run `just gate` locally
 and confirm it's green before tagging.
 
+**What `just release` needs from the build environment** (it is env-driven, and refuses to run
+without them): `TAURI_SIGNING_PRIVATE_KEY` — the **contents** of the updater key file, conventionally
+`~/.tauri/lector-updater.key` and mode-600, never a path — plus
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and the Apple notary creds (`APPLE_SIGNING_IDENTITY` pointing at
+a Developer ID Application cert, plus `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`, or the
+`APPLE_API_KEY*` trio). How a given maintainer supplies those is theirs to decide — this repo only
+states the interface.
+
+**Building without any of them is supported and expected.** `just build` with the signing/notary vars
+unset produces an ad-hoc, unsigned bundle, and `just deploy` strips the Gatekeeper quarantine xattr so
+a local copy still runs — the from-source path a contributor gets. Signing is enabled by the
+environment, never pinned in `tauri.conf.json`: `createUpdaterArtifacts` is switched on release-only
+via `release.sh`'s `--config` override, because baking it in would make **every** `cargo tauri build`
+demand the signing key and break the keyless path.
+
 ## Generated scripts belong to shell-core
 
 `scripts/release.sh`, `scripts/gen-latest-json.sh`, and `scripts/install-app.sh` are

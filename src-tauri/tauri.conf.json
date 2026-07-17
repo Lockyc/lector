@@ -25,7 +25,7 @@
       "endpoints": [
         "https://github.com/Lockyc/lector/releases/latest/download/latest.json"
       ],
-      "pubkey": "REPLACE_WITH_TASK_12_MINISIGN_PUBKEY"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJCRTQzRjk3RUU3OEQ1OUUKUldTZTFYanVsei9rS3g0U1FWU1hmb0g2VndWWDJWRFlHS3pSbjE5Ni9zV21Wbkh0TVJXUUYydEwK"
     }
   }
 }

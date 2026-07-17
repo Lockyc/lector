@@ -22,12 +22,11 @@ another tab's own loopback port is escaped too), and `run()`'s full setup: confi
 build, the shared launch/hot-reload reconciliation path (`reload.rs`), `open_on_launch` startup
 selection, a config-file watcher (format-on-save, last-good-on-failure), and a clean-quit
 `RunEvent::Exit` handler that shuts down every server. The `validate`/`fmt` CLI subcommands round
-it out. Two placeholders remain, both explicitly deferred to a later release task, not part of the
-app's runtime behaviour: `src-tauri/icons/` holds a generic placeholder icon (not lector's real
-brand art), and `tauri.conf.json`'s updater `pubkey` is the literal string
-`REPLACE_WITH_TASK_12_MINISIGN_PUBKEY` (the real minisign keypair is minted, and its private half +
-password vaulted, when the release/updater task lands). The updater's *permission* to run is already
-wired (see the capabilities footgun below) — the remaining gap is purely the signing key, not access.
+it out. The in-app updater is fully wired: it has its permission (see the capabilities footgun
+below) and `tauri.conf.json` carries the real minisign `pubkey`, whose private half lives only on
+the maintainer's machine and in their password manager — never in this repo. One placeholder
+remains, and it is cosmetic rather than behavioural: `src-tauri/icons/` holds a generic placeholder
+icon, not lector's real brand art.
 
 The shape mirrors curator's: a Cargo workspace with a platform-neutral config crate
 (`crates/lector-config` — parse/validate/format/identity, no Tauri deps, unit-tested standalone)
@@ -119,21 +118,14 @@ is `src-tauri/capabilities/default.json`, granting the sidebar (`windows: ["*"]`
 `core:event:allow-listen`/`allow-unlisten` and `core:window:allow-start-dragging`/
 `allow-internal-toggle-maximize`.
 
-**`updater:default`/`process:allow-restart` now live in that file too.** Plugin *registration*
-still flows through **shell-core's `register_plugins`** (see the shared-cores section above), but
-tauri-build's ACL/permission-schema discovery only walks a crate's *direct* dependencies for
-`tauri-plugin-*` crates — a plugin registered transitively behind shell-core is invisible to it. The
-fix is `src-tauri/Cargo.toml` carrying `tauri-plugin-updater`/`tauri-plugin-process` as direct
-`[dependencies]` entries that nothing in this crate's code ever calls (mirrors curator's own
-`Cargo.toml`) — they exist solely to make discovery see the plugins. **Do not delete them as unused
-dead weight**: doing so silently fails the build the moment their capability names are present
-(`"Permission updater:default not found"`), or worse, silently drops the updater's permission grant
-if the capability names are removed alongside them. chrome-core's in-app self-updater (already wired
-in `chrome.js` via the `autoUpdate` DTO field, gated by the config's `auto_update` flag) now has
-permission to run. The minisign keypair itself is still a placeholder
-(`tauri.conf.json`'s `pubkey` is the literal `REPLACE_WITH_TASK_12_MINISIGN_PUBKEY`) — that's a
-runtime signing concern for the release task, not a build-time or permission one; the update check
-will attempt and fail verification against a real endpoint until the real key is minted.
+**`src-tauri/Cargo.toml`'s `tauri-plugin-updater`/`tauri-plugin-process` entries are load-bearing
+despite nothing in this crate calling them — do not delete them as dead weight.** Registration flows
+through shell-core's `register_plugins`, but tauri-build's ACL/permission-schema discovery only walks
+a crate's *direct* dependencies, so a plugin behind shell-core is invisible to it and
+`capabilities/default.json` cannot name its permission. The direct entries exist solely to make
+discovery see them (curator does the same). Removing them while the capability names remain fails the
+build loudly (`"Permission updater:default not found"`); removing both together is the quiet failure —
+the updater silently loses its grant and simply stops updating.
 
 ## Toolchain lockstep
 

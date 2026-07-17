@@ -1,13 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "chrome-events",
-  "description": "Let each window's local chrome sidebar listen for config-reloaded/config-error events (Task 10's hot-reload) and drive window-move drag (the sidebar's `data-tauri-drag-region` invokes the capability-gated `plugin:window|start_dragging`, wired to the config's `sidebar_drag` flag). The chrome is each window's local (App-URL) main webview; content tabs load remote (`http://127.0.0.1:{port}/`) URLs, and this capability has no `remote` block (local-only, the default), so Tauri denies these permissions to remote content by origin regardless of label — the sidebar gets them, a doc's content webview never does. Deliberately carries NO `updater:default`/`process:allow-restart` (curator's own capability file has both): those plugins' permission schemas are undiscoverable to tauri-build here — lector routes `tauri-plugin-updater`/`tauri-plugin-process` through shell-core's `register_plugins` (its runtime feature) rather than depending on them directly in this crate's Cargo.toml (see the workspace CLAUDE.md's shell-core dividing line), and tauri-build's ACL/permission-schema discovery only walks a crate's *direct* dependencies — a transitive plugin behind shell-core is invisible to it, and naming its permission here fails the build outright (\"Permission updater:default not found\"). chrome-core's self-updater is consequently unable to get permission yet; that gap belongs to the updater/signing task (see lector's CLAUDE.md — the minisign keypair itself is still a placeholder), not this file.",
+  "description": "Let each window's local chrome sidebar listen for config-reloaded/config-error events (Task 10's hot-reload), drive window-move drag (the sidebar's `data-tauri-drag-region` invokes the capability-gated `plugin:window|start_dragging`, wired to the config's `sidebar_drag` flag), and run chrome-core's in-app updater (check/download/install + relaunch, gated by the config's `auto_update` flag). The chrome is each window's local (App-URL) main webview; content tabs load remote (`http://127.0.0.1:{port}/`) URLs, and this capability has no `remote` block (local-only, the default), so Tauri denies these permissions to remote content by origin regardless of label — the sidebar gets them, a doc's content webview never does.",
   "windows": ["*"],
   "webviews": ["*"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-start-dragging",
-    "core:window:allow-internal-toggle-maximize"
+    "core:window:allow-internal-toggle-maximize",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

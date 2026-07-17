@@ -34,3 +34,13 @@ anyhow = "1"
 compositor = { git = "https://github.com/Lockyc/compositor", rev = "2b4872a3f166658f2f0fc3e39c064d6f476b8406" }
 # The Tauri runtime sliver: register_plugins (window-state, updater, process).
 shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "ca4e728aa275c2b7582234f9722fdae8818cae51", features = ["runtime"] }
+# Unused directly in this crate's code — registration flows through shell_core::register_plugins,
+# not this dependency. They exist ONLY so tauri-build's ACL/permission-schema discovery (which walks
+# a crate's *direct* dependencies for tauri-plugin-* crates) can see the plugin and let
+# capabilities/default.json name its permissions ("updater:default", "process:allow-restart"). A
+# plugin registered transitively behind shell-core is invisible to that discovery, and naming its
+# permission without a direct dep fails the build outright. Do NOT delete these as dead weight — the
+# updater silently loses its capability grant if you do. (window-state carries no such requirement:
+# lector names no window-state permission, so it needs no matching direct dep here.)
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"

@@ -2179,6 +2179,8 @@ dependencies = [
  "shell-core",
  "tauri",
  "tauri-build",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
 ]
 
 [[package]]

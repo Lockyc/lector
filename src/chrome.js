@@ -4,7 +4,8 @@
 //
 // Adapted from curator's src/chrome.js (the closest template — curator, like lector, sets `active`
 // app-side, so `onSelect` does not auto-fire). Deltas from curator:
-//   - No nav pill: a locally-rendered doc site has no browser-navigation concept to expose.
+//   - The nav pill has three buttons, not four: no reload. compositor's watcher live-reloads the
+//     page on every edit, so a manual reload button would be redundant here — don't "restore" it.
 //   - No badge/notification machinery at all: docs don't notify, so `attention` is always `null`
 //     (there is no shim/sentinel layer here to feed it from).
 //   - No kill concept: `killable` is always `false`, `onKillClose` is omitted (chrome-core only
@@ -14,9 +15,55 @@
 //     only *warns* on a missing/non-existent dir (an un-cloned repo must not strand every other
 //     tab on last-good config), so the failure surfaces here instead, when the user selects that
 //     tab and `select_tab` rejects. Swallowing it would make a missing repo look like a dead click.
+//   - The nav pill's own rejections (nav_back/nav_forward/home_tab) surface the same way — see
+//     `buildNavPill` below.
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+
+// ── Nav pill ─────────────────────────────────────────────────────────────────
+// compositor's page shell has a tree-nav, a TOC, and prev/next links, but prev/next is reading
+// order, not history, and there's no history.back() anywhere in it — following a link three levels
+// deep leaves no way back. This pill is that missing back button, plus home (surfacing home_tab,
+// which already existed but was only reachable by re-clicking the active tab).
+// SVGs: exact geometry so icons align (carried over from curator's BACK_SVG/FWD_SVG/HOME_SVG).
+const BACK_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>`;
+const FWD_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>`;
+const HOME_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>`;
+
+let activeLabel = null; // controller mirror of the component's active tab (the nav pill acts on it)
+let navBtns = [];
+
+function buildNavPill() {
+  const pill = document.createElement("div");
+  pill.className = "nav-pill";
+  const wire = (id, icon, cmd) => {
+    const btn = document.createElement("button");
+    btn.className = "nav-btn";
+    btn.id = id;
+    btn.innerHTML = icon;
+    btn.disabled = true; // no tab active at construction time — see setActiveLabel
+    btn.addEventListener("click", () => {
+      if (activeLabel) invoke(cmd, { label: activeLabel }).catch((e) => sb.setError(String(e)));
+    });
+    pill.appendChild(btn);
+    return btn;
+  };
+  navBtns = [
+    wire("nav-back", BACK_SVG, "nav_back"),
+    wire("nav-forward", FWD_SVG, "nav_forward"),
+    wire("nav-home", HOME_SVG, "home_tab"),
+  ];
+  return pill;
+}
+
+// Buttons render always; only the disabled state tracks whether a tab is active — never remove
+// them. Called wherever activeLabel changes, including the clear path (unload_tab → active: null
+// on the next refresh), so a live-looking Back button never sits over the empty pane.
+function setActiveLabel(label) {
+  activeLabel = label;
+  for (const b of navBtns) b.disabled = !label;
+}
 
 // ── DTO mapping ─────────────────────────────────────────────────────────────
 async function buildDto() {
@@ -66,6 +113,7 @@ function reportRect() {
 async function refresh() {
   const dto = await buildDto();
   sb.update(dto);
+  setActiveLabel(dto.active);
   paintEmptyState(dto.active);
   reportRect();
 }
@@ -84,6 +132,9 @@ async function mountChrome() {
     document.getElementById("sidebar"),
     {
       onSelect(tabId, { wasActive }) {
+        // Mirror chrome-core's own optimistic highlight move so the nav pill enables immediately
+        // on click, not only after the next refresh() (curator does the same in its onSelect).
+        setActiveLabel(tabId);
         // Re-clicking the active tab snaps it home (curator's home-on-active); otherwise select
         // it. Either rejection surfaces in the chrome's error bar — see this file's header note.
         invoke(wasActive ? "home_tab" : "select_tab", { label: tabId }).catch((e) => sb.setError(String(e)));
@@ -106,6 +157,7 @@ async function mountChrome() {
       // presence).
     },
     {
+      header: buildNavPill(),
       storageKey: "lector:sidebar-width:" + title,
       defaultWidth,
       minWidth: MIN_W,

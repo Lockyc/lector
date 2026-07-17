@@ -178,6 +178,8 @@ pub fn run() {
             commands::select_tab,
             commands::unload_tab,
             commands::home_tab,
+            commands::nav_back,
+            commands::nav_forward,
             commands::set_hole_rect,
         ])
         .build(tauri::generate_context!())

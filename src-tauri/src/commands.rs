@@ -315,6 +315,22 @@ pub fn home_tab(
     crate::webviews::navigate(&app, &label, &format!("http://127.0.0.1:{port}/"))
 }
 
+/// Step the tab's content webview back through its in-page history. No-op if the webview isn't
+/// created or there's nothing to go back to (WKWebView history isn't exposed here). Unlike
+/// curator's `nav_back`, this has no `require_chrome` gate — see this module's header doc for the
+/// verified reason lector's command surface doesn't need one.
+#[tauri::command]
+pub fn nav_back(label: String, app: tauri::AppHandle) -> Result<(), String> {
+    crate::webviews::eval_on(&app, &label, "history.back()")
+}
+
+/// Step the tab's content webview forward through its in-page history. No-op if the webview isn't
+/// created or there's nothing to go forward to.
+#[tauri::command]
+pub fn nav_forward(label: String, app: tauri::AppHandle) -> Result<(), String> {
+    crate::webviews::eval_on(&app, &label, "history.forward()")
+}
+
 /// A content-hole rect reported by the chrome (logical px, top-left), deserialized from the
 /// `set_hole_rect` command's `{ rect: {x, y, width, height} }` argument. The chrome (chrome-core)
 /// owns the sidebar width and its resize clamp; the flex `#content-hole` follows from CSS, and the

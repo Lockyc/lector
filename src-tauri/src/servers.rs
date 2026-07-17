@@ -32,14 +32,39 @@ impl Servers {
     /// On failure (missing dir, bind failure) nothing is registered — the tab stays cold and the
     /// caller sends the message to the chrome's `setError`. That is the error channel; per-repo
     /// build health is explicitly out of scope.
+    ///
+    /// `compositor::serve_handle` walks and renders the whole docs tree before returning
+    /// (measured 150-450ms on real repos), so it must run outside the registry lock — holding
+    /// the lock across it would stall every other tab's `is_live`/`port`/`start`/`stop` behind
+    /// one cold start, exactly the freeze the module avoids for `shutdown()`'s thread joins.
+    /// That leaves a window where two concurrent `start()` calls for the same label can both
+    /// build, so the insert is double-checked: after the build, re-take the lock, re-check
+    /// membership, and if another thread already won, discard this thread's own handle (shut
+    /// down outside the lock, per the same rule) and return the winner's port. Accepted cost: in
+    /// that rare race, one build is wasted and one transient bind happens — strictly better than
+    /// stalling every tab for up to ~450ms on every cold start.
     pub fn start(&self, label: &str, dir: &Path) -> Result<u16, String> {
-        let mut live = self.live.lock().expect("servers lock");
-        if let Some(s) = live.get(label) {
+        if let Some(s) = self.live.lock().expect("servers lock").get(label) {
             return Ok(s.port);
         }
         let handle = compositor::serve_handle(dir).map_err(|e| format!("{e:#}"))?;
         let port = handle.port;
-        live.insert(label.to_string(), SiteServer { port, handle });
+
+        let loser = {
+            let mut live = self.live.lock().expect("servers lock");
+            if let Some(s) = live.get(label) {
+                // Another thread won the race while we were building. Keep the winner, discard
+                // ours — but not under the lock (see the doc comment above).
+                Some((s.port, SiteServer { port, handle }))
+            } else {
+                live.insert(label.to_string(), SiteServer { port, handle });
+                None
+            }
+        };
+        if let Some((winner_port, ours)) = loser {
+            ours.handle.shutdown();
+            return Ok(winner_port);
+        }
         Ok(port)
     }
 
@@ -111,6 +136,31 @@ mod tests {
         dir
     }
 
+    /// A doc repo with `n` pages, each carrying a few fenced code blocks. Real build cost is
+    /// dominated by markdown/syntax-highlight rendering per page, so this is what makes a
+    /// scratch repo's build take a non-trivial, roughly-linear-in-`n` amount of wall time
+    /// instead of the sub-millisecond `scratch()` above. Calibrated on this machine (debug
+    /// build): 5 pages ~184ms, 8 pages ~292ms — see `start_does_not_stall_other_calls_during_a_cold_build`
+    /// for why that matters.
+    fn scratch_big(name: &str, n: usize) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("lector-srv-big-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        for i in 1..=n {
+            let content = format!(
+                "# Page {i}\n\nSome prose about page {i}, enough that the renderer has real \
+                 parsing work to do.\n\n\
+                 ```rust\nfn f() -> u32 {{ {i} }}\n```\n\n\
+                 ```python\ndef f():\n    return {i}\n```\n\n\
+                 ```bash\necho {i}\n```\n\n\
+                 - a\n- b\n- c\n"
+            );
+            std::fs::write(dir.join(format!("docs/page{i}.md")), content).unwrap();
+        }
+        dir
+    }
+
     fn get(port: u16, path: &str) -> String {
         use std::io::{Read, Write};
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -176,6 +226,42 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_start_on_the_same_label_registers_exactly_one_server() {
+        // Exercises the double-checked insert directly: many threads racing start() for the
+        // same label must still end up with exactly one registered server — idempotency under
+        // real concurrency, not just in sequence — and no loser handle left sitting in the map.
+        // Unlike the stall test above this makes no timing assumption, so it cannot flake on a
+        // slow machine; it only asserts the final state is correct regardless of how the
+        // threads happened to interleave.
+        let dir = scratch("race");
+        let s = std::sync::Arc::new(Servers::new());
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let s = std::sync::Arc::clone(&s);
+                let dir = dir.clone();
+                std::thread::spawn(move || s.start("t1", &dir).unwrap())
+            })
+            .collect();
+        let ports: Vec<u16> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        let first = ports[0];
+        assert!(
+            ports.iter().all(|&p| p == first),
+            "every racing start() must agree on the one winning port: {ports:?}"
+        );
+        assert_eq!(
+            s.live.lock().unwrap().len(),
+            1,
+            "a race must not register more than one server for the same label"
+        );
+        assert_eq!(s.port("t1"), Some(first));
+
+        s.shutdown_all();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn retain_stops_servers_for_removed_tabs() {
         // The config-hot-reload leak: a removed tab must have its server shut down, or every edit
         // leaks a watcher and a port.
@@ -193,6 +279,63 @@ mod tests {
         s.shutdown_all();
         std::fs::remove_dir_all(&a).ok();
         std::fs::remove_dir_all(&b).ok();
+    }
+
+    #[test]
+    fn start_does_not_stall_other_calls_during_a_cold_build() {
+        // Regression test for the fix: `start()` must build *outside* the registry lock, so
+        // another tab's `is_live`/`port` never blocks behind one tab's cold start. Before the
+        // fix, `start()` held the lock across `compositor::serve_handle`, which walks and
+        // renders the whole docs tree (measured 161-454ms on real doc repos — see servers.rs's
+        // `start` doc comment). `scratch_big` reproduces that cost synthetically (calibrated
+        // ~292ms for 8 pages on this machine, in the same ballpark as the real measurements) so
+        // this test doesn't depend on checking out an unrelated sibling repo to get a slow build.
+        let big = scratch_big("stall", 8);
+        let other = scratch("stall-other");
+        let s = std::sync::Arc::new(Servers::new());
+
+        let builder = {
+            let s = std::sync::Arc::clone(&s);
+            let dir = big.clone();
+            std::thread::spawn(move || s.start("big", &dir))
+        };
+        // Let the builder thread get past its fast-path check and into the build itself before
+        // we start probing, so we're not racing it to the very first lock acquisition.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // Generous bound: an uncontended lock + HashMap lookup is microsecond-scale, so 50ms is
+        // enormous headroom for a single probe on any machine. It is still far below the
+        // fixture's ~150ms+ build time, so if `start()` ever regresses to building under the
+        // lock, a probe issued mid-build blocks for a large chunk of the *remaining* build and
+        // trips this reliably. Do not widen this bound to "fix" a flake — a flake here means the
+        // lock genuinely is being held; widen the fixture's build time instead.
+        const PROBE_BOUND: std::time::Duration = std::time::Duration::from_millis(50);
+        let mut probes = 0u32;
+        while !builder.is_finished() {
+            let t0 = std::time::Instant::now();
+            assert!(!s.is_live("other"), "unrelated label must not be live");
+            assert_eq!(s.port("other"), None, "unrelated label must have no port");
+            let elapsed = t0.elapsed();
+            assert!(
+                elapsed < PROBE_BOUND,
+                "a probe on an unrelated tab took {elapsed:?} while another tab was cold-\
+                 starting \u{2014} start() is holding the registry lock across the build"
+            );
+            probes += 1;
+        }
+        assert!(
+            probes > 0,
+            "the builder finished before any probe ran \u{2014} scratch_big no longer builds \
+             slowly enough to exercise the race; enlarge its page count"
+        );
+
+        let port = builder.join().unwrap().expect("build succeeds");
+        assert!(s.is_live("big"));
+        assert_eq!(s.port("big"), Some(port));
+
+        s.shutdown_all();
+        std::fs::remove_dir_all(&big).ok();
+        std::fs::remove_dir_all(&other).ok();
     }
 
     #[test]

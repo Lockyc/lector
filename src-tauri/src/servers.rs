@@ -368,6 +368,17 @@ mod tests {
         // `start` doc comment). `scratch_big` reproduces that cost synthetically (calibrated
         // ~292ms for 8 pages on this machine, in the same ballpark as the real measurements) so
         // this test doesn't depend on checking out an unrelated sibling repo to get a slow build.
+        //
+        // The bound below is a *ratio* of probe latency to the build's own measured duration in
+        // this same run — not an absolute millisecond figure. An absolute bound (e.g. "a probe
+        // must take <50ms") is what shipped here originally, and it flaked under machine load:
+        // this box routinely sits at load average 90-260, and at that load even a perfectly
+        // healthy, uncontended probe can be descheduled past any fixed small bound — the test
+        // was measuring the machine's scheduler, not `start()`'s locking. Load inflates both the
+        // build's wall-clock duration and an occasionally-descheduled probe by roughly the same
+        // factor, so their *ratio* stays stable across load while either one's absolute value
+        // does not. Do not "fix" a flake here by reverting to an absolute bound — that
+        // reintroduces exactly the failure this rewrite removes.
         let big = scratch_big("stall", 8);
         let other = scratch("stall-other");
         let s = std::sync::Arc::new(Servers::new());
@@ -375,30 +386,26 @@ mod tests {
         let builder = {
             let s = std::sync::Arc::clone(&s);
             let dir = big.clone();
-            std::thread::spawn(move || s.start("big", &dir))
+            std::thread::spawn(move || {
+                let t0 = std::time::Instant::now();
+                let result = s.start("big", &dir);
+                (result, t0.elapsed())
+            })
         };
         // Let the builder thread get past its fast-path check and into the build itself before
         // we start probing, so we're not racing it to the very first lock acquisition.
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        // Generous bound: an uncontended lock + HashMap lookup is microsecond-scale, so 50ms is
-        // enormous headroom for a single probe on any machine. It is still far below the
-        // fixture's ~150ms+ build time, so if `start()` ever regresses to building under the
-        // lock, a probe issued mid-build blocks for a large chunk of the *remaining* build and
-        // trips this reliably. Do not widen this bound to "fix" a flake — a flake here means the
-        // lock genuinely is being held; widen the fixture's build time instead.
-        const PROBE_BOUND: std::time::Duration = std::time::Duration::from_millis(50);
         let mut probes = 0u32;
+        let mut max_probe = std::time::Duration::ZERO;
         while !builder.is_finished() {
             let t0 = std::time::Instant::now();
             assert!(!s.is_live("other"), "unrelated label must not be live");
             assert_eq!(s.port("other"), None, "unrelated label must have no port");
             let elapsed = t0.elapsed();
-            assert!(
-                elapsed < PROBE_BOUND,
-                "a probe on an unrelated tab took {elapsed:?} while another tab was cold-\
-                 starting \u{2014} start() is holding the registry lock across the build"
-            );
+            if elapsed > max_probe {
+                max_probe = elapsed;
+            }
             probes += 1;
         }
         assert!(
@@ -407,9 +414,26 @@ mod tests {
              slowly enough to exercise the race; enlarge its page count"
         );
 
-        let port = builder.join().unwrap().expect("build succeeds");
+        let (result, build_elapsed) = builder.join().unwrap();
+        let port = result.expect("build succeeds");
         assert!(s.is_live("big"));
         assert_eq!(s.port("big"), Some(port));
+
+        // Held-lock bug: a probe blocks until the build releases the lock, so its latency is on
+        // the order of the build's *whole* duration — max_probe / build_elapsed lands close to
+        // 1.0. Correct (unlocked) code: a probe only touches an uncontended mutex and a HashMap
+        // lookup, microsecond-scale work, so the ratio sits near zero even under heavy
+        // scheduling noise. 1/5 sits far below the buggy value and comfortably above the noise
+        // floor observed in practice (a few percent, from occasional scheduler preemption of the
+        // probing thread itself under this machine's load) — pick it and leave it; do not inch
+        // it back toward 1 to chase a flake.
+        let ratio = max_probe.as_secs_f64() / build_elapsed.as_secs_f64();
+        assert!(
+            ratio < 0.2,
+            "worst probe ({max_probe:?}) was {ratio:.3}x the build's own duration \
+             ({build_elapsed:?}) \u{2014} start() looks like it is holding the registry lock \
+             across the build"
+        );
 
         s.shutdown_all();
         std::fs::remove_dir_all(&big).ok();

@@ -155,6 +155,20 @@ pub fn show(app: &AppHandle, label: &str, port: u16) -> Result<(), String> {
     raise_only(&window, label)
 }
 
+/// Destroy `label`'s content webview if it exists, freeing its memory and removing it from the
+/// window. No-op if it was never created (an unload of a tab that was never selected). Used by
+/// `unload_tab` so a cold tab doesn't strand a dead-connection page on screen — without this, closing
+/// the server but leaving the webview up shows a broken page instead of the app's empty state.
+pub fn close(app: &AppHandle, label: &str) {
+    let window_id = label.split(':').next().unwrap_or_default();
+    let Some(window) = app.get_window(window_id) else {
+        return;
+    };
+    if let Some(wv) = window.get_webview(label) {
+        let _ = wv.close();
+    }
+}
+
 /// Navigate an already-created content webview to `url` (curator's `reload_canonical`, applied to a
 /// local site — used by `home_tab`). No-op if the webview hasn't been created yet.
 pub fn navigate(app: &AppHandle, label: &str, url: &str) -> Result<(), String> {

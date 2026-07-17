@@ -1,7 +1,26 @@
 //! The Tauri command surface + the managed [`AppState`]. lector's sidebar chrome (`src/chrome.js`)
-//! is the only caller of these — there is no per-caller trust gate (unlike curator's
-//! `is_chrome_caller`) because Task 9 does not build one; see CLAUDE.md / the task report for that
-//! deliberate scope line.
+//! is the intended caller of these, but unlike curator there is no `is_chrome_caller`-style
+//! per-caller gate here — Tauri's own IPC dispatch already does the job for the shape this app has.
+//!
+//! The sidebar is the window's MAIN webview, loaded from `frontendDist` (`tauri://…`), so Tauri's
+//! `is_local_url` (`webview/mod.rs`) classifies it `Origin::Local`. Every content webview instead
+//! loads `http://127.0.0.1:{port}/` — a compositor server's loopback address, which matches none of
+//! `is_local_url`'s cases (the `tauri://` asset protocol, the configured dev URL, or a registered
+//! custom scheme) — so Tauri classifies it `Origin::Remote`. lector ships **no**
+//! `src-tauri/capabilities/*.json`, so `RuntimeAuthority::has_app_manifest()` is false and
+//! `allowed_commands` is empty. Dispatch (`webview/mod.rs:on_message`) only *requires* a resolved
+//! ACL when `has_app_acl_manifest || !is_local`: for the local sidebar that's false, so it's let
+//! through unconditionally; for a remote content webview `!is_local` is true, `resolve_access`
+//! against an empty `allowed_commands` map always returns `None`, and the invoke is rejected before
+//! any command body runs — gate or no gate. Verified against the pinned `tauri = 2.11.5`
+//! (`Cargo.lock`) vendored source.
+//!
+//! **Footgun:** the local/remote split is by *origin*, not by "chrome vs. anything else local" — it
+//! does not distinguish a second local-origin surface from the sidebar. If lector ever gains another
+//! `WebviewUrl::App` window sharing this command set (curator's error window is the precedent), that
+//! new surface would ride the same free pass the sidebar gets today and would need an explicit gate
+//! (a curator-style `is_chrome_caller`) to stay restricted. Content webviews staying `External` (as
+//! `webviews.rs` documents) is what keeps this safe for now.
 
 use crate::servers::Servers;
 use lector_config::{Density, TabView};
@@ -132,6 +151,32 @@ impl AppState {
             .cloned()
     }
 
+    /// Stop `label`'s server and, if it was its window's active tab, clear active for that window.
+    /// This is the state half of `unload_tab` — split out from the `#[tauri::command]` wrapper so it
+    /// needs no `AppHandle`/webview and is directly unit-testable.
+    ///
+    /// Clearing (rather than promoting a neighbour, as curator does) is deliberate: lector shows
+    /// exactly one tab at a time and never eager-starts others (see `lib.rs`'s `setup` — load_on_open
+    /// eager-start is Task 10's concern), so there is never an already-live sibling to promote to.
+    /// Leaving a stale `active` label here is exactly the Finding-1 bug: `get_tabs`' DTO would keep
+    /// reporting the cold tab as active, `chrome.js`'s `wasActive` would stay true on a re-click, and
+    /// the click would route to `home_tab` (which errors — the server is stopped) instead of
+    /// `select_tab` (which would restart it).
+    pub fn unload(&self, label: &str) {
+        self.servers.stop(label);
+        self.clear_active_if(label);
+    }
+
+    /// Clear this window's active tab iff it currently points at `label`. No-op when a different
+    /// tab (or none) is active — unloading a tab that isn't showing must not disturb the one that is.
+    fn clear_active_if(&self, label: &str) {
+        let window = label.split(':').next().unwrap_or_default();
+        let mut active = self.active.lock().expect("active lock");
+        if active.get(window).map(String::as_str) == Some(label) {
+            active.remove(window);
+        }
+    }
+
     pub fn set_colour(&self, window_id: &str, colour: Option<String>) {
         self.colours
             .lock()
@@ -179,11 +224,14 @@ pub fn select_tab(
     Ok(())
 }
 
-/// Unload a tab: stop its server and free its thread, watcher, and port. The tab goes cold; its
-/// content is regenerated from disk on the next select, so nothing is lost.
+/// Unload a tab: stop its server, close its content webview, and — if it was the window's active
+/// tab — clear active so the empty state paints and the next click restarts it via `select_tab`
+/// rather than erroring through `home_tab` (see `AppState::unload`'s doc for the full failure chain
+/// this prevents). The tab's content is regenerated from disk on the next select, so nothing is lost.
 #[tauri::command]
-pub fn unload_tab(label: String, state: tauri::State<'_, AppState>) {
-    state.servers.stop(&label);
+pub fn unload_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    state.unload(&label);
+    crate::webviews::close(&app, &label);
 }
 
 /// The invoking window's identity for the chrome banner, plus the whole-app chrome settings.
@@ -371,5 +419,63 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].title, "Loose");
         assert_eq!(got[1].title, "Grouped");
+    }
+
+    #[test]
+    fn unload_clears_active_so_a_reclick_routes_to_select_not_home() {
+        // Regression for the Finding-1 bug: unloading the active tab must clear AppState.active for
+        // its window. Before the fix, `unload_tab` only stopped the server — `active` kept pointing
+        // at the now-cold tab, so `get_tabs`' DTO kept reporting it `active: true`, `chrome.js`'s
+        // `wasActive = this.active === id` stayed true on the next click, and the click routed to
+        // `home_tab` instead of `select_tab`. `home_tab` does `servers.port(&label).ok_or("tab is
+        // not live")?` against a stopped server — an immediate, permanent error until some other tab
+        // was selected first (which is the only thing that used to overwrite `active`).
+        let state = AppState::new();
+        let views = vec![lector_config::TabView {
+            label: "w1:tab-a".into(),
+            group: None,
+            title: "A".into(),
+            dir: "/tmp".into(),
+            load_on_open: false,
+        }];
+        state.set_views(views);
+        state.set_active("w1:tab-a");
+        assert_eq!(state.active_for("w1").as_deref(), Some("w1:tab-a"));
+
+        state.unload("w1:tab-a");
+
+        assert_eq!(
+            state.active_for("w1"),
+            None,
+            "unloading the active tab must clear AppState.active for its window, not leave it \
+             pointing at a cold tab"
+        );
+
+        // The routing consequence: `get_tabs`' DTO (what chrome.js's `wasActive` is computed from)
+        // must now say this tab is NOT active — otherwise the JS-side re-click would still take the
+        // home_tab branch even though Rust's `active` map is clear.
+        let views = state.views_for_window("w1");
+        let dtos = tab_dtos(&views, &state.servers, state.active_for("w1").as_deref());
+        assert!(
+            !dtos[0].active,
+            "the unloaded tab must no longer read as active in the DTO chrome.js consumes"
+        );
+    }
+
+    #[test]
+    fn unload_of_a_non_active_tab_leaves_active_untouched() {
+        // The other half of the state machine: unloading a tab that ISN'T showing must not disturb
+        // whichever tab actually is active.
+        let state = AppState::new();
+        state.set_active("w1:tab-a");
+        state.set_active("w1:tab-b"); // tab-b is now the sole active tab for w1
+
+        state.unload("w1:tab-a");
+
+        assert_eq!(
+            state.active_for("w1").as_deref(),
+            Some("w1:tab-b"),
+            "unloading a non-active tab must not clear or change a different tab's active state"
+        );
     }
 }

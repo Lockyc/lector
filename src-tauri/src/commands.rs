@@ -6,21 +6,38 @@
 //! `is_local_url` (`webview/mod.rs`) classifies it `Origin::Local`. Every content webview instead
 //! loads `http://127.0.0.1:{port}/` — a compositor server's loopback address, which matches none of
 //! `is_local_url`'s cases (the `tauri://` asset protocol, the configured dev URL, or a registered
-//! custom scheme) — so Tauri classifies it `Origin::Remote`. lector ships **no**
-//! `src-tauri/capabilities/*.json`, so `RuntimeAuthority::has_app_manifest()` is false and
-//! `allowed_commands` is empty. Dispatch (`webview/mod.rs:on_message`) only *requires* a resolved
-//! ACL when `has_app_acl_manifest || !is_local`: for the local sidebar that's false, so it's let
-//! through unconditionally; for a remote content webview `!is_local` is true, `resolve_access`
-//! against an empty `allowed_commands` map always returns `None`, and the invoke is rejected before
-//! any command body runs — gate or no gate. Verified against the pinned `tauri = 2.11.5`
+//! custom scheme) — so Tauri classifies it `Origin::Remote`.
+//!
+//! This crate's own `#[tauri::command]`s (everything below) need no capabilities entry: with no
+//! app-defined ACL manifest, `RuntimeAuthority::has_app_manifest()` is false and dispatch
+//! (`webview/mod.rs:on_message`) only *requires* a resolved ACL when `has_app_acl_manifest ||
+//! !is_local` — for the local sidebar that's false, so every command here is let through
+//! unconditionally; for a remote content webview `!is_local` is true and the invoke is rejected
+//! before any command body runs, gate or no gate. Verified against the pinned `tauri = 2.11.5`
 //! (`Cargo.lock`) vendored source.
 //!
-//! **Footgun:** the local/remote split is by *origin*, not by "chrome vs. anything else local" — it
-//! does not distinguish a second local-origin surface from the sidebar. If lector ever gains another
-//! `WebviewUrl::App` window sharing this command set (curator's error window is the precedent), that
-//! new surface would ride the same free pass the sidebar gets today and would need an explicit gate
-//! (a curator-style `is_chrome_caller`) to stay restricted. Content webviews staying `External` (as
-//! `webviews.rs` documents) is what keeps this safe for now.
+//! **This bypass does NOT extend to core *plugin* commands** (`core:event`, `core:window`, …) —
+//! those are gated by their own default-denied permission set regardless of `has_app_manifest()`,
+//! and lector genuinely ships a `src-tauri/capabilities/default.json` granting the sidebar
+//! `core:event:allow-listen`/`allow-unlisten` (hot-reload's `config-reloaded`/`config-error`
+//! events, `lib.rs`) and `core:window:allow-start-dragging` (the sidebar's
+//! `data-tauri-drag-region`). **Footgun (found 2026-07-17): before that file existed, both
+//! silently no-op'd** — `event.listen` rejects with `"not allowed"` from the plugin's own ACL, not
+//! from this crate's dispatch path, so the analysis above (which is correct for *this crate's*
+//! commands) doesn't cover it. Discovered because hot-reload's `listen("config-reloaded", …)`
+//! never fired despite the Rust side confirmed reconciling and `emit_to` returning `Ok(())` —
+//! `emit_to` succeeding only means no serialization/argument error, never that a listener actually
+//! received it. The same gap still applies to `updater:default`/`process:allow-restart`
+//! (chrome-core's in-app updater) — see `capabilities/default.json`'s own doc for why those two
+//! can't be added the same way.
+//!
+//! **Footgun:** the local/remote split (for this crate's own commands) is by *origin*, not by
+//! "chrome vs. anything else local" — it does not distinguish a second local-origin surface from
+//! the sidebar. If lector ever gains another `WebviewUrl::App` window sharing this command set
+//! (curator's error window is the precedent), that new surface would ride the same free pass the
+//! sidebar gets today and would need an explicit gate (a curator-style `is_chrome_caller`) to stay
+//! restricted. Content webviews staying `External` (as `webviews.rs` documents) is what keeps this
+//! safe for now.
 
 use crate::servers::Servers;
 use lector_config::{Density, TabView};
@@ -207,21 +224,29 @@ impl Default for AppState {
 }
 
 /// Select a tab: start its server if cold, then point its webview at the port. A start failure
-/// leaves the tab cold and returns the message — the caller surfaces it via the chrome's setError.
+/// leaves the tab cold and returns the message. Split out from the `#[tauri::command]` wrapper so
+/// `run()`'s launch-time `open_on_launch` selection can call the exact same path a click does,
+/// rather than a shadow copy of start-then-show-then-set_active.
+pub fn select(app: &tauri::AppHandle, state: &AppState, label: &str) -> Result<(), String> {
+    let view = state
+        .view(label)
+        .ok_or_else(|| format!("no such tab: {label}"))?;
+    let dir = lector_config::expand_tilde(&view.dir);
+    let port = state.servers.start(label, &dir)?;
+    crate::webviews::show(app, label, port)?;
+    state.set_active(label);
+    Ok(())
+}
+
+/// The `#[tauri::command]` wrapper around [`select`] — the caller surfaces a start failure via the
+/// chrome's setError.
 #[tauri::command]
 pub fn select_tab(
     label: String,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    let view = state
-        .view(&label)
-        .ok_or_else(|| format!("no such tab: {label}"))?;
-    let dir = lector_config::expand_tilde(&view.dir);
-    let port = state.servers.start(&label, &dir)?;
-    crate::webviews::show(&app, &label, port)?;
-    state.set_active(&label);
-    Ok(())
+    select(&app, &state, &label)
 }
 
 /// Unload a tab: stop its server, close its content webview, and — if it was the window's active

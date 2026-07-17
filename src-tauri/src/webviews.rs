@@ -5,9 +5,12 @@
 //! exactly one tab at a time (no curator-style "stay live in the background" tabs), so switching is
 //! just show-this-one-hide-the-rest.
 //!
-//! Link escape (curator's click interception + same-site navigation) is Task 10's concern — this
-//! task's content webviews navigate freely, which is fine: every URL they ever load is
-//! `http://127.0.0.1:{port}/…`, a compositor server this app itself started.
+//! **Link escape.** A doc linking off-site (`https://github.com/…`) would otherwise navigate the
+//! tab off its local compositor site and strand it — the tab has no back button and no way home.
+//! `is_own_origin` gates every navigation in a content webview's `on_navigation`: only a URL whose
+//! scheme, host, AND port all match this tab's own `127.0.0.1:{port}` stays in the webview;
+//! anything else — including *another tab's* loopback port, which is still loopback but would
+//! silently show a different repo's site inside this tab — opens in the system browser instead.
 
 use tauri::webview::WebviewBuilder;
 use tauri::{
@@ -130,8 +133,29 @@ fn raise_only(window: &Window, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// True iff `url` is this tab's own site — scheme, host, AND port must all match. Anything else
+/// (an off-site doc link, or even *another tab's* loopback port) opens in the system browser: a doc
+/// linking to github.com would otherwise navigate this tab off its site and strand it, since the tab
+/// has no back button and no way home.
+fn is_own_origin(url: &str, port: u16) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    authority == format!("127.0.0.1:{port}")
+}
+
+/// Hand a URL to the macOS default handler (the user's default browser). Side-effecting; not
+/// unit-tested — mirrors curator's `escape::escape_to_default_browser`.
+fn open_in_system_browser(url: &str) {
+    let _ = std::process::Command::new("open").arg(url).spawn();
+}
+
 /// Create-or-navigate `label`'s content webview to `http://127.0.0.1:{port}/`, then show it and
 /// hide every other tab in the window. This is where a cold tab's webview is born.
+///
+/// The webview's `on_navigation` is gated by [`is_own_origin`]: only this tab's own loopback origin
+/// navigates in place, everything else escapes to the system browser (see the module doc).
 pub fn show(app: &AppHandle, label: &str, port: u16) -> Result<(), String> {
     let window_id = label.split(':').next().unwrap_or_default();
     let window = app.get_window(window_id).ok_or("no such window")?;
@@ -143,7 +167,15 @@ pub fn show(app: &AppHandle, label: &str, port: u16) -> Result<(), String> {
         wv.navigate(url).map_err(|e| e.to_string())?;
     } else {
         let hole = hole_for(window_id);
-        let builder = WebviewBuilder::new(label, WebviewUrl::External(url));
+        let builder =
+            WebviewBuilder::new(label, WebviewUrl::External(url)).on_navigation(move |target| {
+                if is_own_origin(target.as_str(), port) {
+                    true
+                } else {
+                    open_in_system_browser(target.as_str());
+                    false
+                }
+            });
         window
             .add_child(
                 builder,
@@ -212,5 +244,29 @@ mod tests {
         let h = hole_for("no-such-window-ever");
         assert_eq!(h.x, CHROME_W);
         assert_eq!(h.width, 0.0);
+    }
+
+    #[test]
+    fn only_this_tabs_own_origin_stays_in_the_webview() {
+        // Same origin — navigate in place.
+        assert!(is_own_origin("http://127.0.0.1:8080/", 8080));
+        assert!(is_own_origin("http://127.0.0.1:8080/guides/x.html", 8080));
+        assert!(is_own_origin("http://127.0.0.1:8080/__reload", 8080));
+
+        // A DIFFERENT tab's port is NOT this tab's origin — it is loopback, but navigating there
+        // would silently show another repo's site inside this tab, with the sidebar still
+        // highlighting this one. Escape it.
+        assert!(!is_own_origin("http://127.0.0.1:9999/", 8080));
+
+        // Off-site links escape to the system browser.
+        assert!(!is_own_origin("https://github.com/lockyc/lector", 8080));
+        assert!(!is_own_origin("http://example.test/", 8080));
+        assert!(
+            !is_own_origin("https://127.0.0.1:8080/", 8080),
+            "scheme must match"
+        );
+        // A lookalike host must not pass a naive prefix check.
+        assert!(!is_own_origin("http://127.0.0.1.evil.test/", 8080));
+        assert!(!is_own_origin("http://127.0.0.1:8080.evil.test/", 8080));
     }
 }

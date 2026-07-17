@@ -117,10 +117,9 @@ impl Servers {
         }
     }
 
-    /// Stop every server whose label is not in `keep`. Called on config hot-reload: a removed tab
-    /// must have its server shut down and threads joined, or every config edit leaks a watcher and
-    /// a port.
-    #[allow(dead_code)] // Task 10 (config hot-reload) is the caller; this task builds no reload path
+    /// Stop every server whose label is not in `keep`. Called by `reload::reconcile` on both
+    /// launch and config hot-reload: a removed tab must have its server shut down and threads
+    /// joined, or every config edit leaks a watcher and a port.
     pub fn retain(&self, keep: &HashSet<String>) {
         let dropped: Vec<SiteServer> = {
             let mut live = self.live.lock().expect("servers lock");
@@ -138,8 +137,7 @@ impl Servers {
         }
     }
 
-    /// Stop everything, joining all threads. Called on quit.
-    #[allow(dead_code)] // Task 10 (quit shutdown) is the caller; this task wires no quit handler
+    /// Stop everything, joining all threads. Called on quit (`RunEvent::Exit`, in `lib.rs`).
     pub fn shutdown_all(&self) {
         let all: Vec<SiteServer> = self
             .live

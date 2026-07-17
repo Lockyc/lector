@@ -11,36 +11,41 @@ lector curates local documentation.
 
 ## Current state vs intended architecture
 
-**The workspace now builds.** `crates/lector-config` is complete (parse/validate/format/identity,
-unit-tested standalone). `src-tauri` has the app shell: the manifest pinning all four cores, a
-`build.rs` that stamps the build and materializes chrome-core's CSS/JS + shell-core's release
-scripts, a `tauri.conf.json`, `window_state_filename()` (scopes the window-state plugin's saved
-bounds per config file), `run()` (registers plugins via `shell_core::register_plugins` and opens
-generate_context! with no further setup yet), and the `validate`/`fmt` CLI subcommands. **Not yet
-built**: the sidebar chrome wiring (`src/chrome.js`/`chrome.css`, referenced by `src/index.html`
-but not yet written), the `SiteServer` supervisor that runs one `compositor::serve_handle()` per
-open tab, the Tauri commands the chrome calls, and config hot-reload — `run()`'s `setup` closure
-is a no-op stub these later tasks extend. Two placeholders pending later tasks: `src-tauri/icons/`
-holds a generic placeholder icon (not lector's real brand art), and `tauri.conf.json`'s updater
-`pubkey` is the literal string `REPLACE_WITH_TASK_12_MINISIGN_PUBKEY` (the real minisign keypair
-is minted, and its private half + password vaulted, when the release/updater task lands).
+**The app is complete and functional end-to-end.** `crates/lector-config` is complete
+(parse/validate/format/identity, unit-tested standalone). `src-tauri` has the full app shell: the
+manifest pinning all four cores, `build.rs`, `tauri.conf.json`, `window_state_filename()`, the
+`Servers` supervisor (`servers.rs` — one `compositor::serve_handle()` per open tab, idempotent
+start/stop/retain/shutdown_all, dead-thread detection via `reap`/`is_alive`), the chrome controller
+(`src/chrome.js` + the commands it calls in `commands.rs`), content-webview management with link
+escape (`webviews.rs` — `is_own_origin` keeps a doc's off-site links from stranding the tab, and
+another tab's own loopback port is escaped too), and `run()`'s full setup: config load, window
+build, the shared launch/hot-reload reconciliation path (`reload.rs`), `open_on_launch` startup
+selection, a config-file watcher (format-on-save, last-good-on-failure), and a clean-quit
+`RunEvent::Exit` handler that shuts down every server. The `validate`/`fmt` CLI subcommands round
+it out. Two placeholders remain, both explicitly deferred to a later release task, not part of the
+app's runtime behaviour: `src-tauri/icons/` holds a generic placeholder icon (not lector's real
+brand art), and `tauri.conf.json`'s updater `pubkey` is the literal string
+`REPLACE_WITH_TASK_12_MINISIGN_PUBKEY` (the real minisign keypair is minted, and its private half +
+password vaulted, when the release/updater task lands — see the capabilities footgun below for why
+chrome-core's self-updater can't even ask for permission yet either).
 
-The intended shape mirrors curator's: a Cargo workspace with a platform-neutral config crate
+The shape mirrors curator's: a Cargo workspace with a platform-neutral config crate
 (`crates/lector-config` — parse/validate/format/identity, no Tauri deps, unit-tested standalone)
-consumed by the Tauri app crate (`src-tauri/`, package `lector`) — windows, a `SiteServer`
+consumed by the Tauri app crate (`src-tauri/`, package `lector`) — windows, the `Servers`
 supervisor managing one `compositor::serve_handle()` loop per open tab, the chrome controller,
 commands, config hot-reload.
 
 ## Workspace layout
 
-- **`src-tauri/`** — the macOS Tauri app: the manifest, `build.rs`, `tauri.conf.json`, plugin
-  registration, and the `validate`/`fmt` CLI are written; the `SiteServer` supervisor (one
-  `compositor::serve_handle()` per open tab, each bound to its own ephemeral loopback port), the
-  chrome controller, and commands are not yet.
+- **`src-tauri/`** — the macOS Tauri app: the manifest, `build.rs`, `tauri.conf.json`,
+  `capabilities/default.json`, plugin registration, the `Servers` supervisor (`servers.rs`), the
+  chrome controller + commands (`commands.rs`), content-webview management + link escape
+  (`webviews.rs`), the shared launch/hot-reload reconciliation path (`reload.rs`), `run()`'s full
+  setup (`lib.rs`), and the `validate`/`fmt` CLI.
 - **`crates/lector-config`** — the config parser: the `window → group → tab` schema (a lector tab
   carries a `dir` — a local doc repo path — rather than a `url`), `parse_and_validate` /
-  `load_config`, `resolve_config_path`, identity/hash helpers. Re-exports config-core's shared
-  house formatter + colour parsing, the same way curator/warden do.
+  `load_config`, `resolve_config_path`, identity/hash helpers, `tab_views()`/`startup_label()`.
+  Re-exports config-core's shared house formatter + colour parsing, the same way curator/warden do.
 
 The `[patch]` overrides for all four shared cores live in the **workspace-root `Cargo.toml`** (a
 `[patch]` must sit at the workspace root, not a member manifest) — see *The `[patch]` rule and
@@ -91,6 +96,41 @@ a toolchain problem. curator shipped this bug (fixed 2026-07-16); lector must no
 (see shell-core's own CLAUDE.md dividing line): each consumer hashes its own config path, so the
 ~8-line duplication is the accepted cost of that boundary. Do not reintroduce `DefaultHasher`,
 and do not move this hash into a shared crate to "deduplicate" it.
+
+## The capabilities-file footgun: `has_app_manifest()` bypass does not cover core plugins
+
+`commands.rs`'s header doc works out that with no `src-tauri/capabilities/*.json` at all, Tauri's
+IPC dispatch lets every one of *this crate's own* `#[tauri::command]`s through unconditionally for
+the local sidebar webview (`has_app_manifest()` is false, and dispatch only requires a resolved ACL
+when `has_app_acl_manifest || !is_local`). **That analysis is correct, but it does not extend to
+core *plugin* commands** (`core:event`, `core:window`, `updater`, `process`, …) — those carry their
+own default-denied permission set independent of whether the app ships a manifest at all.
+
+**Footgun (found 2026-07-17): lector shipped with zero capabilities for two tasks' worth of work,
+and `event.listen`/window-drag silently no-op'd the whole time.** Config hot-reload's
+`config-reloaded`/`config-error` events (`lib.rs`'s watcher, `src/chrome.js`'s `listen(...)`) never
+fired — `emit_to` on the Rust side returned `Ok(())` every time (success there only means no
+serialization/argument error, never that a listener existed), while the JS `listen()` promise
+silently rejected with `"event.listen not allowed. Permissions associated with this command:
+core:event:allow-listen, core:event:default"`. The sidebar's `data-tauri-drag-region` (the
+`sidebar_drag` config flag) was equally broken, needing `core:window:allow-start-dragging`. The fix
+is `src-tauri/capabilities/default.json`, granting the sidebar (`windows: ["*"]`, `webviews:
+["*"]`, no `remote` block — content webviews are `Origin::Remote` and never match) exactly
+`core:event:allow-listen`/`allow-unlisten` and `core:window:allow-start-dragging`/
+`allow-internal-toggle-maximize`.
+
+**`updater:default`/`process:allow-restart` deliberately stay OUT of that file** — curator's own
+capability file has both (it depends on `tauri-plugin-updater`/`tauri-plugin-process` directly),
+but lector routes those two plugins through **shell-core's `register_plugins`** instead of
+depending on them directly in `src-tauri/Cargo.toml` (see the shared-cores section above).
+tauri-build's ACL/permission-schema discovery only walks a crate's *direct* dependencies for
+`tauri-plugin-*` crates; a plugin registered transitively behind shell-core is invisible to it, and
+naming its permission in a capabilities file fails the build outright (`"Permission updater:default
+not found"`). So chrome-core's in-app self-updater (already wired in `chrome.js` via the
+`autoUpdate` DTO field, gated by the config's `auto_update` flag) cannot get permission through this
+mechanism at all — that gap is real and unresolved, deferred to whichever task next touches the
+updater (the same task that replaces `tauri.conf.json`'s placeholder minisign pubkey). Don't try to
+paper over it by adding those permissions here; the build will just fail again the same way.
 
 ## Toolchain lockstep
 

@@ -158,7 +158,19 @@ const holeObserver = new ResizeObserver(() => reportRect());
 holeObserver.observe(document.getElementById("content-hole"));
 
 // ── Events ──────────────────────────────────────────────────────────────────
-// config-reloaded / config-error (Task 10, config hot-reload) have no emitter yet, so no listeners
-// here for them — nothing on the Rust side fires those events until that task wires them up.
+// Emitted by the Rust-side config watcher (lib.rs) on every hot-reload: a clean reload re-resolves
+// tabs/servers and fires config-reloaded (refresh picks up the new tab set + live dots); a failed
+// parse/validate leaves state untouched and fires config-error with the message instead, so the
+// existing tabs keep working on last-good config.
+listen("config-reloaded", () => {
+  // Clear any error banner from a previous failed reload — this reload was clean, so whatever was
+  // wrong got fixed. chrome-core's setError is sticky (it doesn't auto-clear on the next update),
+  // so a fixed config would otherwise leave a stale error bar up forever.
+  if (sb) sb.clearError();
+  refresh().catch(() => {});
+});
+listen("config-error", (event) => {
+  if (sb) sb.setError(String(event.payload));
+});
 
 mountChrome();

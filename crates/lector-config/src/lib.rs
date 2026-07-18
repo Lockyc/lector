@@ -12,8 +12,10 @@ pub mod identity;
 
 use serde::{Deserialize, Serialize};
 
-/// What to open when a window launches. `true` (default) → its first tab; `false` → blank;
-/// a string → the tab whose `title` matches (falling back to the first).
+/// What to open when a window launches. The default (`false` / unset) opens the first
+/// `load_on_open` (loaded) tab, else the blank background — the first tab isn't always loaded, so
+/// it isn't forced. `true` opens the first tab even if it isn't loaded; a string opens the tab
+/// whose `title` matches (falling back to the first).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum OpenOnLaunch {
@@ -22,8 +24,7 @@ pub enum OpenOnLaunch {
 }
 impl Default for OpenOnLaunch {
     fn default() -> Self {
-        // Fleet default: open on the first tab (matching warden, which always does; and curator).
-        OpenOnLaunch::Toggle(true)
+        OpenOnLaunch::Toggle(false)
     }
 }
 
@@ -393,11 +394,16 @@ impl WindowConfig {
         views
     }
 
-    /// Label of the tab to open on launch (per `open_on_launch`). `None` = blank.
+    /// Label of the tab to make active on launch. Default (`false`/unset): the first `load_on_open`
+    /// (loaded) tab, else `None` (blank) — the first tab isn't always loaded, so it isn't forced.
+    /// `true`: the first tab even if cold. A title string: the matching tab (else the first).
     pub fn startup_label(&self) -> Option<String> {
         let views = self.tab_views();
         match &self.open_on_launch {
-            OpenOnLaunch::Toggle(false) => None,
+            OpenOnLaunch::Toggle(false) => views
+                .iter()
+                .find(|v| v.load_on_open)
+                .map(|v| v.label.clone()),
             OpenOnLaunch::Toggle(true) => views.first().map(|v| v.label.clone()),
             OpenOnLaunch::Tab(title) => views
                 .iter()
@@ -751,31 +757,36 @@ title = "Docs"
 
     #[test]
     fn startup_label_honours_open_on_launch() {
-        // Default (no `open_on_launch` key) opens the first tab — the fleet default.
+        // Default (no `open_on_launch` key) opens the first LOADED (load_on_open) tab — not
+        // necessarily the first tab. In VALID the first tab (homelab) is cold and the group's
+        // `compositor` is load_on_open, so it wins.
         let default = parse_and_validate(VALID).unwrap().0;
-        assert_eq!(
-            default.windows[0].startup_label(),
-            Some(default.windows[0].tab_views()[0].label.clone())
-        );
+        let loaded = default.windows[0]
+            .tab_views()
+            .into_iter()
+            .find(|v| v.title == "compositor")
+            .unwrap()
+            .label;
+        assert_eq!(default.windows[0].startup_label(), Some(loaded));
 
-        // Explicit `open_on_launch = false` opts out → blank.
-        let src = VALID.replace(
-            "title = \"Docs\"",
-            "title = \"Docs\"\nopen_on_launch = false",
-        );
-        let blank = parse_and_validate(&src).unwrap().0;
-        assert_eq!(blank.windows[0].startup_label(), None);
-
-        // `open_on_launch = true` is the explicit form of the default → first tab.
+        // `open_on_launch = true` forces the first tab even though it's cold (homelab).
         let src = VALID.replace(
             "title = \"Docs\"",
             "title = \"Docs\"\nopen_on_launch = true",
         );
-        let eager = parse_and_validate(&src).unwrap().0;
+        let forced = parse_and_validate(&src).unwrap().0;
         assert_eq!(
-            eager.windows[0].startup_label(),
-            Some(eager.windows[0].tab_views()[0].label.clone())
+            forced.windows[0].startup_label(),
+            Some(forced.windows[0].tab_views()[0].label.clone())
         );
+
+        // No loaded tab anywhere → blank background, nothing forced.
+        let none = parse_and_validate(
+            "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"a\"\ndir = \"/tmp\"\n",
+        )
+        .unwrap()
+        .0;
+        assert_eq!(none.windows[0].startup_label(), None);
 
         let src = VALID.replace(
             "title = \"Docs\"",

@@ -131,21 +131,6 @@ fn open_or_focus_window(app: &tauri::AppHandle, window_id: &str) {
     reload::reconcile_home(app, &entries, &path.to_string_lossy(), path.exists(), None);
 }
 
-/// The tab to make active when a window launches: `open_on_launch`'s choice, else the first
-/// `load_on_open` tab (already eager-started by `reload::reconcile`), so a window of loaded
-/// services opens showing one rather than the blank placeholder. `None` → blank. Mirrors curator's
-/// launch resolution so the two apps agree; `WindowConfig::startup_label` stays pure
-/// `open_on_launch`, and this app-level fallback is the launch policy on top of it.
-fn launch_label(win_cfg: &lector_config::WindowConfig) -> Option<String> {
-    win_cfg.startup_label().or_else(|| {
-        win_cfg
-            .tab_views()
-            .into_iter()
-            .find(|v| v.load_on_open)
-            .map(|v| v.label)
-    })
-}
-
 /// Re-run launch reconciliation for windows the app has never built — currently only the home
 /// surface's "Create a starter config" button, which turns a `NoConfig` state (necessarily zero
 /// windows built yet, since no config ever loaded) into a real config the app has never seen.
@@ -175,7 +160,7 @@ pub(crate) fn reload_now(app: &tauri::AppHandle) {
         if !built.contains(&wid) {
             continue;
         }
-        if let Some(label) = launch_label(win_cfg) {
+        if let Some(label) = win_cfg.startup_label() {
             if let Err(e) = commands::select(app, &state, &label) {
                 eprintln!("startup selection failed for {label:?}: {e}");
             }
@@ -218,17 +203,18 @@ pub fn run() {
 
         apply_config(app.handle(), &cfg, &warnings);
 
-        // Launch selection (`launch_label` — `open_on_launch`'s tab, else the first load_on_open
-        // one): select it exactly the way a click would (`commands::select` — start-if-cold, show,
-        // mark active), never a shadow copy of that logic. A failure (e.g. the tab's dir doesn't
-        // exist yet) just stays cold; it isn't fatal to launch.
+        // Launch selection (`WindowConfig::startup_label` — the first load_on_open tab by default,
+        // or whatever `open_on_launch` overrides to): select it exactly the way a click would
+        // (`commands::select` — start-if-cold, show, mark active), never a shadow copy of that
+        // logic. A failure (e.g. the tab's dir doesn't exist yet) just stays cold; it isn't fatal
+        // to launch.
         let state = app.state::<commands::AppState>();
         for win_cfg in &cfg.windows {
             let wid = lector_config::identity::window_id(&win_cfg.title);
             if !built.contains(&wid) {
                 continue;
             }
-            if let Some(label) = launch_label(win_cfg) {
+            if let Some(label) = win_cfg.startup_label() {
                 if let Err(e) = commands::select(app.handle(), &state, &label) {
                     eprintln!("startup selection failed for {label:?}: {e}");
                 }
@@ -464,48 +450,5 @@ mod tests {
         assert_eq!(window_state_filename(), window_state_filename());
         assert!(window_state_filename().starts_with(".window-state-"));
         assert!(window_state_filename().ends_with(".json"));
-    }
-
-    #[test]
-    fn launch_label_falls_back_to_first_load_on_open_when_opted_out() {
-        // `open_on_launch = false` opts out of the first-tab default, but a load_on_open tab is
-        // eager-started at launch — so the window opens showing it rather than the blank
-        // placeholder, matching curator. startup_label alone would be None here.
-        let cfg = lector_config::parse_and_validate(
-            "[[window]]\ntitle = \"W\"\nopen_on_launch = false\n\
-             [[window.tab]]\ntitle = \"a\"\ndir = \"/tmp\"\n\
-             [[window.tab]]\ntitle = \"b\"\ndir = \"/usr\"\nload_on_open = true\n",
-        )
-        .unwrap()
-        .0;
-        let win = &cfg.windows[0];
-        assert_eq!(
-            win.startup_label(),
-            None,
-            "opted out → no explicit startup tab"
-        );
-        let want = win
-            .tab_views()
-            .into_iter()
-            .find(|v| v.title == "b")
-            .unwrap()
-            .label;
-        assert_eq!(
-            launch_label(win),
-            Some(want),
-            "falls back to the load_on_open tab"
-        );
-    }
-
-    #[test]
-    fn launch_label_is_none_when_opted_out_and_nothing_load_on_open() {
-        // Opted out with no load_on_open tab → genuinely blank, no fallback to invent.
-        let cfg = lector_config::parse_and_validate(
-            "[[window]]\ntitle = \"W\"\nopen_on_launch = false\n\
-             [[window.tab]]\ntitle = \"a\"\ndir = \"/tmp\"\n",
-        )
-        .unwrap()
-        .0;
-        assert_eq!(launch_label(&cfg.windows[0]), None);
     }
 }

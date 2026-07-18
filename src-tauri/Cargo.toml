@@ -16,7 +16,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 # The sidebar chrome: this crate is a thin include_str! wrapper, and build.rs writes the assets into
 # frontendDist before generate_context! embeds that dir.
-chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "243e9f6aef7ec622f80a5452493fb9a4e1fcda33" }
+chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "f7879092f289630ec52d6cb6270be1d9ebe52c51" }
 # Zero-dep by default — build_stamp() + materialize_scripts() are all build.rs needs.
 # `default-features = false` is LOAD-BEARING: without it this build-dep drags in the whole tauri tree.
 shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "17f27b3b95d41188a90a6f48b7a094484c1c975a", default-features = false }

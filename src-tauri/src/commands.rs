@@ -539,6 +539,25 @@ pub fn raise_popped_window(
     }
 }
 
+/// Dock tab `label` back into its origin window — the ↩ pop-in overlay on a detached row. Closes
+/// the tab's detached window, whose `Destroyed` handler runs `redock` (re-showing the tab on its
+/// still-running server/port); the same return path as closing the popped-out window by hand.
+#[tauri::command]
+pub fn pop_in_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    let target = state
+        .detached
+        .lock()
+        .expect("detached lock")
+        .iter()
+        .find(|(_, d)| d.tab_label == label)
+        .map(|(l, _)| l.clone());
+    if let Some(l) = target {
+        if let Some(win) = app.get_window(&l) {
+            let _ = win.close();
+        }
+    }
+}
+
 /// The invoking window's identity for the chrome banner, plus the whole-app chrome settings.
 #[derive(Serialize)]
 pub struct Identity {

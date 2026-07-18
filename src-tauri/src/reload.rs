@@ -67,7 +67,11 @@ pub fn window_entries(
 /// a failed one, so a config edited from working into broken while every window happens to be closed
 /// still explains itself rather than going dark). `has_windows` is derived from `entries` itself
 /// (any window currently open) rather than taken as a separate argument — one fewer thing for a
-/// caller to get out of sync with the list it just built.
+/// caller to get out of sync with the list it just built — folded together with whether any tab is
+/// currently popped out into its own detached window: a detached window is a real surface on
+/// screen, so the home surface must not appear over it even if every *real* window happens to be
+/// closed (possible while a detached window — or another still-open window — keeps the app alive
+/// past last-window-quit). Mirrors curator's equivalent fold in its own `reconcile_home`.
 pub fn reconcile_home(
     app: &tauri::AppHandle,
     entries: &[shell_core::menu::WindowEntry],
@@ -75,7 +79,14 @@ pub fn reconcile_home(
     config_exists: bool,
     load_error: Option<&str>,
 ) {
-    let has_windows = entries.iter().any(|w| w.open);
+    use tauri::Manager as _;
+    let has_detached = !app
+        .state::<AppState>()
+        .detached
+        .lock()
+        .expect("detached lock")
+        .is_empty();
+    let has_windows = entries.iter().any(|w| w.open) || has_detached;
     match shell_core::home::home_state(has_windows, config_exists, config_path, load_error, entries)
     {
         Some(state) => {

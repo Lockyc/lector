@@ -1,10 +1,40 @@
 use lector_config::hash::fnv1a_64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
 mod commands;
 mod reload;
 mod servers;
 mod webviews;
+
+/// Set once on `RunEvent::ExitRequested` (see [`run`]), which fires before every window's
+/// `Destroyed` during ⌘Q. Checked at the top of [`redock`] so a detached window's teardown doesn't
+/// reopen its (already-closing) origin window mid-quit. Never reset — lector doesn't prevent exit.
+static IS_QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Mark the app as quitting. Called once, from `RunEvent::ExitRequested`.
+pub(crate) fn mark_quitting() {
+    IS_QUITTING.store(true, Ordering::SeqCst);
+}
+
+/// Whether the app is quitting — see [`IS_QUITTING`].
+pub(crate) fn is_quitting() -> bool {
+    IS_QUITTING.load(Ordering::SeqCst)
+}
+
+/// The opaque token identifying a popped-out tab's detached window
+/// (→ [`shell_core::detach::detached_label`]). A lector content-webview label is already
+/// `{window_id}:tab-<hash>` — globally unique across windows and Tauri-label-safe — so it *is* the
+/// token; the origin window is tracked on [`commands::LectorDetached`], never parsed back out of
+/// the label. Mirrors curator's `detach_window_token` exactly.
+pub(crate) fn detach_window_token(tab_label: &str) -> String {
+    tab_label.to_string()
+}
+
+/// The detached window's banner height (matches shell-core's `detach.html` `#banner`, 2.25rem ≈
+/// 36px). Only used to size the recreated webview's BIRTH rect so it doesn't flash full-height for
+/// one frame before `detach.html`'s own `set_hole_rect` lands and reports the exact hole.
+pub(crate) const DETACH_BANNER_H: f64 = 36.0;
 
 /// Filename for the window-state plugin's saved bounds, scoped per config file. The plugin keys
 /// window state by Tauri label *within one file*; two different configs can reuse a window title,
@@ -131,6 +161,79 @@ fn open_or_focus_window(app: &tauri::AppHandle, window_id: &str) {
     reload::reconcile_home(app, &entries, &path.to_string_lossy(), path.exists(), None);
 }
 
+/// Return a popped-out tab to its origin window when its detached window closes — the `on_close`
+/// wired via [`shell_core::detach::wire_return`] (`commands::pop_out_tab`). Runs on the main thread
+/// (Tauri delivers the window `Destroyed` event there). lector can't move a webview between windows
+/// either, so — like [`commands::pop_out_tab`] itself — this *recreates* the tab's content webview on
+/// the origin, reusing the SAME port [`commands::LectorDetached`] recorded (the server was never
+/// stopped across the hop, so nothing on disk or in the compositor watcher was disturbed).
+///
+/// Order matters: the origin+tab+port are read (not removed) first, so that if the origin window was
+/// closed while the tab was out, [`open_or_focus_window`] reopens it while the tab is STILL in
+/// `AppState::detached` — harmless, since reopening a window never touches `detached` or recreates
+/// any content webview on its own (see that function's doc: it only rebuilds the window shell).
+/// Only then is the bookkeeping removed and the webview recreated on the origin.
+pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
+    // ⌘Q teardown: `RunEvent::ExitRequested` fires before every window's `Destroyed`. Don't reopen
+    // an origin or recreate a webview mid-quit — everything is being torn down, and the servers are
+    // about to be shut down wholesale anyway (see `run`'s `RunEvent::Exit` arm).
+    if is_quitting() {
+        return;
+    }
+    let state = app.state::<commands::AppState>();
+
+    // Peek the origin + tab + port without removing (see the doc comment's ordering rationale).
+    let Some((origin_wid, tab_label, port)) = state
+        .detached
+        .lock()
+        .expect("detached lock")
+        .get(detached_label)
+        .map(|d| (d.origin_wid.clone(), d.tab_label.clone(), d.port))
+    else {
+        return; // already redocked (double-close) — nothing to do
+    };
+
+    // Reopen the origin if the user closed it while the tab was popped out (case: another window or
+    // the detached window itself kept the app alive past last-window-quit).
+    if app.get_window(&origin_wid).is_none() {
+        open_or_focus_window(app, &origin_wid);
+    }
+
+    // Now take the bookkeeping — a raced double-close (two Destroyed events for the same window)
+    // would find nothing left here and bail.
+    if state
+        .detached
+        .lock()
+        .expect("detached lock")
+        .remove(detached_label)
+        .is_none()
+    {
+        return;
+    }
+
+    if state.view(&tab_label).is_none() {
+        // The tab (or its whole window) was removed from the config while it was popped out — it
+        // simply ends rather than coming back. The server it was keeping alive is no longer wanted
+        // by anything: stop it explicitly (rather than leaving it to be swept up only at quit) so a
+        // config edit doesn't leak a serve loop + watcher for the rest of the session.
+        state.servers.stop(&tab_label);
+        return;
+    }
+
+    // Recreate the content webview on the origin, reusing the SAME port — this is what makes the
+    // round trip near-lossless: the compositor serve loop (and its watcher) never stopped, so the
+    // page picks up exactly where the detached window's copy left off.
+    let _ = webviews::show(app, &tab_label, port);
+    state.set_active(&tab_label);
+
+    // Re-render the origin chrome so the returned row loses its ⤢ detached mark and reflects the new
+    // active tab. `config-reloaded` drives the chrome's refresh() (a get_tabs re-fetch); emit_to
+    // targets only that window's chrome (lector's per-window emit scoping, `emit_to_focused_chrome`'s
+    // sibling for a specific label rather than the focused one). If the origin was just reopened its
+    // fresh mount already refreshes, so a missed emit self-corrects.
+    let _ = app.emit_to(origin_wid.as_str(), "config-reloaded", ());
+}
+
 /// Re-run launch reconciliation for windows the app has never built — currently only the home
 /// surface's "Create a starter config" button, which turns a `NoConfig` state (necessarily zero
 /// windows built yet, since no config ever loaded) into a real config the app has never seen.
@@ -222,8 +325,8 @@ pub fn run() {
         }
 
         // The menu spine: App/Config/Window are shared (shell-core), Tab is lector's own — it
-        // holds nothing but the spine's Close Tab (⌘W), since compositor's watcher makes a
-        // Reload Tab meaningless here and there is no Reset All analogue.
+        // holds the spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O), since compositor's watcher makes
+        // a Reload Tab meaningless here and there is no Reset All analogue.
         let window_entries = reload::window_entries(app.handle(), &state.window_meta());
         let spine = shell_core::menu::build_spine(
             app,
@@ -238,6 +341,7 @@ pub fn run() {
         )?;
         let tab_menu = tauri::menu::SubmenuBuilder::new(app, "Tab")
             .item(&spine.close_tab)
+            .item(&spine.pop_out_tab)
             .build()?;
         let items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![
             &spine.submenus[0], // App
@@ -263,6 +367,12 @@ pub fn run() {
                 // which tab is active and the dot repaint, so it drives unload_tab off this
                 // event (warden's model, now the family standard).
                 shell_core::menu::ids::CLOSE_TAB => emit_to_focused_chrome(app, "close-tab", ()),
+                // ⌘⇧O pops the focused window's active tab out into its own window. The chrome owns
+                // which tab is active, so it drives pop_out_tab off this event (routed to only the
+                // focused window's chrome, the same per-window emit pattern as close-tab).
+                shell_core::menu::ids::POP_OUT_TAB => {
+                    emit_to_focused_chrome(app, "pop-out-tab", ())
+                }
                 shell_core::menu::ids::CLOSE_WINDOW => {
                     if let Some(win) = app.get_focused_window() {
                         let _ = win.close();
@@ -387,6 +497,8 @@ pub fn run() {
         commands::nav_back,
         commands::nav_forward,
         commands::set_hole_rect,
+        commands::pop_out_tab,
+        commands::raise_popped_window,
         commands::shell_home_create_config,
         commands::shell_home_edit_config,
         commands::shell_home_open_window,
@@ -395,6 +507,11 @@ pub fn run() {
     .expect("error while building lector");
 
     app.run(|app_handle, event| {
+        // ExitRequested fires before every window's Destroyed during ⌘Q; mark quitting so a
+        // detached window's teardown doesn't reopen its origin mid-quit (see `redock`).
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            mark_quitting();
+        }
         // Shut down every live server and join its threads on quit — otherwise a compositor
         // serve loop (and its watcher) outlives the app.
         if let tauri::RunEvent::Exit = event {
@@ -450,5 +567,24 @@ mod tests {
         assert_eq!(window_state_filename(), window_state_filename());
         assert!(window_state_filename().starts_with(".window-state-"));
         assert!(window_state_filename().ends_with(".json"));
+    }
+
+    #[test]
+    fn detach_token_round_trips_through_the_detached_label() {
+        // A content-webview label is `{origin_wid}:tab-<hash>` — the token IS that label, and it
+        // must survive shell-core's detached-label wrapping so a detached window is recognised
+        // (is_detached_label) and its token recoverable (detach_token). Deterministic, too. Mirrors
+        // curator's identical test for its own `detach_window_token`.
+        let tab_label = "w0123456789abcdef:tab-00112233445566ff";
+        let token = detach_window_token(tab_label);
+        assert_eq!(token, detach_window_token(tab_label)); // stable
+        let label = shell_core::detach::detached_label(&token);
+        assert!(shell_core::detach::is_detached_label(&label));
+        assert_eq!(
+            shell_core::detach::detach_token(&label),
+            Some(token.as_str())
+        );
+        // A real (config-defined) window label is never mistaken for a detached one.
+        assert!(!shell_core::detach::is_detached_label(tab_label));
     }
 }

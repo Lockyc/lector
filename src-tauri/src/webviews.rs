@@ -154,14 +154,15 @@ fn open_in_system_browser(url: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
-/// Create-or-navigate `label`'s content webview to `http://127.0.0.1:{port}/`, then show it and
-/// hide every other tab in the window. This is where a cold tab's webview is born.
+/// Create-or-navigate `label`'s content webview to `http://127.0.0.1:{port}/` inside `window`, then
+/// show it and hide every other tab in that same window. This is where a cold tab's webview is
+/// born — shared core for both [`show`] (the normal case, where `window` is derived from `label`'s
+/// own `{window_id}:tab-hash` prefix) and [`show_on`] (a detached window, whose Tauri label has no
+/// relation to that prefix, so the caller resolves `window` itself).
 ///
 /// The webview's `on_navigation` is gated by [`is_own_origin`]: only this tab's own loopback origin
 /// navigates in place, everything else escapes to the system browser (see the module doc).
-pub fn show(app: &AppHandle, label: &str, port: u16) -> Result<(), String> {
-    let window_id = label.split(':').next().unwrap_or_default();
-    let window = app.get_window(window_id).ok_or("no such window")?;
+fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
     let url: Url = format!("http://127.0.0.1:{port}/")
         .parse()
         .map_err(|e| format!("{e}"))?;
@@ -169,7 +170,7 @@ pub fn show(app: &AppHandle, label: &str, port: u16) -> Result<(), String> {
     if let Some(wv) = window.get_webview(label) {
         wv.navigate(url).map_err(|e| e.to_string())?;
     } else {
-        let hole = hole_for(window_id);
+        let hole = hole_for(window.label());
         let builder =
             WebviewBuilder::new(label, WebviewUrl::External(url)).on_navigation(move |target| {
                 if is_own_origin(target.as_str(), port) {
@@ -187,7 +188,39 @@ pub fn show(app: &AppHandle, label: &str, port: u16) -> Result<(), String> {
             )
             .map_err(|e| e.to_string())?;
     }
-    raise_only(&window, label)
+    raise_only(window, label)
+}
+
+/// Create-or-navigate `label`'s content webview to `http://127.0.0.1:{port}/`, then show it and
+/// hide every other tab in the window. `window` is resolved from `label`'s own `{window_id}:…`
+/// prefix — the normal (origin-window) case, including a redocked tab (its label's prefix is
+/// always its origin window's id).
+pub fn show(app: &AppHandle, label: &str, port: u16) -> Result<(), String> {
+    let window_id = label.split(':').next().unwrap_or_default();
+    let window = app.get_window(window_id).ok_or("no such window")?;
+    show_in(&window, label, port)
+}
+
+/// Same as [`show`], but for a window whose Tauri label is unrelated to `label`'s own
+/// `{window_id}:tab-hash` prefix — a popped-out tab's detached window (`shell-detach:<token>`).
+/// `pop_out_tab`'s birth closure calls this to dock the tab's content webview onto the freshly
+/// built detached window; [`show`]'s own prefix-based lookup would resolve the wrong window (or
+/// none at all) for a detached label. The caller must [`seed_hole`] a rect for `window`'s label
+/// before calling this, or the webview is born at the zero-size fallback [`hole_for`] returns for
+/// an unregistered window.
+pub fn show_on(window: &Window, label: &str, port: u16) -> Result<(), String> {
+    show_in(window, label, port)
+}
+
+/// Seed a hole rect for `window_label` ahead of its first content webview — used only for a
+/// detached window, whose id is never passed to [`build_window`] (which seeds the normal case).
+/// The detached window's own banner page reports its real rect moments later via `set_hole_rect`,
+/// which overwrites this; this just avoids a zero-size flash for the first frame.
+pub fn seed_hole(window_label: &str, hole: HoleRect) {
+    HOLES
+        .lock()
+        .expect("holes lock")
+        .insert(window_label.to_string(), hole);
 }
 
 /// Destroy `label`'s content webview if it exists, freeing its memory and removing it from the

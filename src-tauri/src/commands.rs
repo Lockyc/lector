@@ -49,9 +49,10 @@
 use crate::servers::Servers;
 use lector_config::{Density, TabView};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use tauri::Manager as _;
 
 /// lector's starter config. Tracked, and `include_str!`'d so a missing/renamed template is a build
 /// error rather than a runtime surprise.
@@ -68,12 +69,25 @@ pub struct TabPayload {
     /// probed for life, never the config's `load_on_open`. See `Servers::is_alive`.
     pub loaded: bool,
     pub active: bool,
+    /// Popped out into its own detached window (`pop_out_tab`). Its server keeps running (`loaded`
+    /// reflects that, unaffected) — only its content webview on THIS window is gone. The chrome
+    /// renders a ⤢ mark and maps a click on the row to "raise the popped-out window"
+    /// (`raise_popped_window`) rather than selecting it. Invisible to the component until
+    /// `chrome.js`'s DTO mapping forwards it.
+    pub detached: bool,
 }
 
 /// Project the resolved tabs + the live registry into rows for the chrome. `views` must already be
 /// in the order the sidebar should render (the ordering itself is `AppState::views_for_window`'s
-/// job, not this function's).
-pub fn tab_dtos(views: &[TabView], servers: &Servers, active: Option<&str>) -> Vec<TabPayload> {
+/// job, not this function's). `detached` is the set of tab labels currently popped out into their
+/// own window (`AppState::detached_tab_labels`), passed in rather than an `&AppState` so this stays
+/// unit-testable with plain values, like the rest of this function's inputs.
+pub fn tab_dtos(
+    views: &[TabView],
+    servers: &Servers,
+    active: Option<&str>,
+    detached: &HashSet<String>,
+) -> Vec<TabPayload> {
     views
         .iter()
         .map(|v| TabPayload {
@@ -82,6 +96,7 @@ pub fn tab_dtos(views: &[TabView], servers: &Servers, active: Option<&str>) -> V
             group: v.group.clone(),
             loaded: servers.is_alive(&v.label),
             active: active == Some(v.label.as_str()),
+            detached: detached.contains(&v.label),
         })
         .collect()
 }
@@ -98,6 +113,19 @@ pub struct WindowMeta {
     pub width: f64,
     pub height: f64,
     pub colour: Option<String>,
+}
+
+/// A tab popped out into its own detached window (`pop_out_tab`). Kept in [`AppState::detached`],
+/// **separate from `window_meta`**, so hot-reload reconcile and the Window submenu never see it —
+/// the same reason curator keeps its equivalent (`CuratorDetached`) out of its window registry.
+/// `port` is recorded rather than re-derived from `Servers::port` on redock: the server is never
+/// stopped across the hop (that's the whole point of a near-lossless pop-out), so the port a
+/// `pop_out_tab` call resolved is still the right one, and storing it here means `redock` needs no
+/// extra registry lookup to reuse it.
+pub struct LectorDetached {
+    pub origin_wid: String,
+    pub tab_label: String,
+    pub port: u16,
 }
 
 /// The app's managed state. One instance, registered with `.manage()` in `run()`.
@@ -140,6 +168,11 @@ pub struct AppState {
     /// and later via `reload_now`); never shrinks — a window that's closed stays in this list so it
     /// can be rebuilt.
     window_meta: Mutex<Vec<WindowMeta>>,
+    /// Tabs currently popped out into their own detached window, keyed by the detached window's
+    /// Tauri label ([`shell_core::detach::detached_label`]). **Separate from `window_meta`** so
+    /// reconcile/window-state never touch these ephemeral windows, and so the home-surface check can
+    /// still count them (`reload::reconcile_home`) — a detached window is a real surface on screen.
+    pub detached: Mutex<HashMap<String, LectorDetached>>,
 }
 
 impl AppState {
@@ -153,6 +186,7 @@ impl AppState {
             sidebar_drag: AtomicBool::new(true),
             auto_update: AtomicBool::new(true),
             window_meta: Mutex::new(Vec::new()),
+            detached: Mutex::new(HashMap::new()),
         }
     }
 
@@ -262,6 +296,18 @@ impl AppState {
     pub fn set_window_meta(&self, meta: Vec<WindowMeta>) {
         *self.window_meta.lock().expect("window_meta lock") = meta;
     }
+
+    /// Every tab label currently popped out into its own window, across every window. Labels are
+    /// already window-namespaced (`{window_id}:tab-hash`), so a flat set needs no per-window split —
+    /// used by [`tab_dtos`] to set each row's `detached` flag.
+    pub fn detached_tab_labels(&self) -> HashSet<String> {
+        self.detached
+            .lock()
+            .expect("detached lock")
+            .values()
+            .map(|d| d.tab_label.clone())
+            .collect()
+    }
 }
 
 impl Default for AppState {
@@ -311,8 +357,18 @@ fn neighbour_label(views: &[TabView], unloaded: &str, live: &[bool]) -> Option<S
 /// promote the nearest still-live neighbour so the hole shows another loaded tab rather than the
 /// empty background — background only when this was the last live tab. The tab's content is
 /// regenerated from disk on the next select, so nothing is lost.
+///
+/// No-op if `label` is currently popped out into its own detached window. chrome-core's live/unload
+/// dot stays fully interactive on a `detached` row (only the pop-out control itself is suppressed —
+/// see chrome-core's `_renderRow`), so a stray hover-✕ or the ⌘W accelerator can still reach here for
+/// a detached tab. Its origin webview is already gone (nothing to close), and — unlike curator, which
+/// has no server to protect — stopping the server here would kill the detached window's still-live
+/// content out from under it, defeating the whole point of a near-lossless pop-out.
 #[tauri::command]
 pub fn unload_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    if state.detached_tab_labels().contains(&label) {
+        return;
+    }
     let window = label.split(':').next().unwrap_or_default().to_string();
     let was_active = state.active_for(&window).as_deref() == Some(label.as_str());
     // Tear down this tab: stop its server and clear active if it was showing (AppState::unload),
@@ -330,6 +386,155 @@ pub fn unload_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, 
             .collect();
         if let Some(next) = neighbour_label(&views, &label, &live) {
             let _ = select(&app, &state, &next);
+        }
+    }
+}
+
+/// Pop the tab `label` out of its origin window into its own detached window. lector can't move a
+/// server or a webview between windows, so a NEW content webview is created on the detached window,
+/// pointed at the SAME running port as the tab's existing (or freshly started) server — this is
+/// what makes the pop near-lossless: the compositor serve loop (and its watcher) keeps running
+/// throughout, so the detached window's copy picks up exactly where the origin's left off, live
+/// reload included. The origin's own content webview for `label` is closed (its app-global label
+/// must be free for the detached window's copy) but its **server is never stopped** here — see
+/// [`crate::webviews::close`] (webview only) vs [`Servers::stop`] (this command touches neither the
+/// latter nor [`AppState::unload`], which calls it).
+#[tauri::command]
+pub fn pop_out_tab(
+    label: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // Defensive: the chrome already suppresses the pop-out control on a row it knows is detached
+    // (`!t.detached` in chrome-core), but a stale double-click could still race the DTO refresh. A
+    // second pop of the same label would try to build a second Tauri window under the SAME label
+    // (the token is the tab label itself) — `WindowLabelAlreadyExists` — which would then trip the
+    // failure-path restore below and stomp the first, still-live detached window's content webview.
+    // Reject up front instead.
+    if state.detached_tab_labels().contains(&label) {
+        return Err(format!("{label} is already popped out"));
+    }
+    let view = state
+        .view(&label)
+        .ok_or_else(|| format!("no such tab: {label}"))?;
+    let window_id = label.split(':').next().unwrap_or_default().to_string();
+
+    // Resolve the origin window's size/colour up front, before any teardown below — a lookup miss
+    // here would mean `window_id` drifted out of sync with `window_meta` (every real window is
+    // pushed there at build time, before any command from its webview can run), so it's rejected
+    // rather than guessed at, and rejected before this call has any side effect to undo.
+    let meta = state.window_meta();
+    let (width, height, colour) = meta
+        .iter()
+        .find(|m| m.id == window_id)
+        .map(|m| (m.width, m.height, m.colour.clone()))
+        .ok_or_else(|| format!("no window metadata for {window_id}"))?;
+
+    // Ensure the server is live and get its port — idempotent if it's already running (the common
+    // case: popping out a tab you're currently looking at). Never stopped by this command.
+    let dir = lector_config::expand_tilde(&view.dir);
+    let port = state.servers.start(&label, &dir)?;
+
+    // If this was the origin window's active tab, clear it and promote the nearest still-live
+    // neighbour into view — the same policy `unload_tab` uses. The popped tab's own server stays
+    // "live" throughout, but `neighbour_label`/`pick_live_neighbour` never consider the index being
+    // vacated, so it can't promote itself.
+    let was_active = state.active_for(&window_id).as_deref() == Some(label.as_str());
+    state.clear_active_if(&label);
+    crate::webviews::close(&app, &label);
+    if was_active {
+        let views = state.views_for_window(&window_id);
+        let live: Vec<bool> = views
+            .iter()
+            .map(|v| state.servers.is_alive(&v.label))
+            .collect();
+        if let Some(next) = neighbour_label(&views, &label, &live) {
+            let _ = select(&app, &state, &next);
+        }
+    }
+
+    // Build the detached window: banner title = the TAB's title (not the window's), accent/size =
+    // the ORIGIN window's colour/configured size (resolved up front above) — lector has no per-tab
+    // size, same choice curator makes for its equivalent.
+    let spec = shell_core::detach::DetachSpec {
+        title: view.title.clone(),
+        colour,
+        width,
+        height,
+    };
+    // A content-webview label is already globally unique (`{window_id}:tab-hash`), so it doubles as
+    // the detach token — mirrors curator's `detach_window_token`.
+    let token = crate::detach_window_token(&label);
+    let birth_hole = crate::webviews::HoleRect {
+        x: 0.0,
+        y: crate::DETACH_BANNER_H,
+        width,
+        height: (height - crate::DETACH_BANNER_H).max(0.0),
+    };
+    let label_for_birth = label.clone();
+    let build = shell_core::detach::open_detached(&app, &token, &spec, "lector", |win| {
+        let w = win.as_ref().window();
+        // The detached window is never passed to `webviews::build_window`, so it has no HOLES
+        // entry yet — seed one before docking content, or `show_on` would fall back to a
+        // zero-size hole for the first frame. `detach.html`'s own `set_hole_rect` (already a
+        // generic command — it doesn't care whether the window is "real" or detached) overwrites
+        // this with the exact measured rect moments later.
+        crate::webviews::seed_hole(w.label(), birth_hole);
+        crate::webviews::show_on(&w, &label_for_birth, port)
+            .map_err(|e| tauri::Error::Io(std::io::Error::other(e)))
+    });
+
+    let detached_label = match build {
+        Ok(l) => l,
+        Err(e) => {
+            // Build/dock failed: the tab has no webview anywhere (the origin's was already closed,
+            // and `open_detached` tears its own half-built window back down on `Err`). Restore it
+            // on the origin — visible, since the restored webview IS what `show`'s raise_only just
+            // put on screen, so `active` must follow it regardless of whether this tab was active
+            // before the attempt. The server was never touched, so nothing to undo there.
+            let _ = crate::webviews::show(&app, &label, port);
+            state.set_active(&label);
+            return Err(format!("couldn't pop out tab: {e}"));
+        }
+    };
+
+    state.detached.lock().expect("detached lock").insert(
+        detached_label.clone(),
+        LectorDetached {
+            origin_wid: window_id,
+            tab_label: label,
+            port,
+        },
+    );
+    if let Some(win) = app.get_webview_window(&detached_label) {
+        let app2 = app.clone();
+        let label2 = detached_label.clone();
+        shell_core::detach::wire_return(&win, move || crate::redock(&app2, &label2));
+    }
+    Ok(())
+}
+
+/// Raise the detached window hosting tab `label` (popped out via [`pop_out_tab`]). The chrome calls
+/// this instead of `select_tab` when a row already marked `detached` is clicked — there is no local
+/// webview to select, so "select" means "bring its popped-out window forward". No-op if the tab
+/// isn't actually popped out (a stale click) or its window is gone.
+#[tauri::command]
+pub fn raise_popped_window(
+    label: String,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) {
+    let target = state
+        .detached
+        .lock()
+        .expect("detached lock")
+        .iter()
+        .find(|(_, d)| d.tab_label == label)
+        .map(|(l, _)| l.clone());
+    if let Some(l) = target {
+        if let Some(win) = app.get_window(&l) {
+            let _ = win.unminimize();
+            let _ = win.set_focus();
         }
     }
 }
@@ -375,6 +580,7 @@ pub fn get_tabs(window: tauri::Window, state: tauri::State<'_, AppState>) -> Vec
         &views,
         &state.servers,
         state.active_for(&window_id).as_deref(),
+        &state.detached_tab_labels(),
     )
 }
 
@@ -501,15 +707,15 @@ mod tests {
         }];
 
         // …but nothing has started it, so it is cold.
-        let dtos = tab_dtos(&views, &servers, None);
+        let dtos = tab_dtos(&views, &servers, None, &HashSet::new());
         assert!(!dtos[0].loaded, "load_on_open must not imply live");
 
         servers.start("t1", &dir).unwrap();
-        let dtos = tab_dtos(&views, &servers, None);
+        let dtos = tab_dtos(&views, &servers, None, &HashSet::new());
         assert!(dtos[0].loaded, "a started server must read as live");
 
         servers.shutdown_all();
-        let dtos = tab_dtos(&views, &servers, None);
+        let dtos = tab_dtos(&views, &servers, None, &HashSet::new());
         assert!(!dtos[0].loaded, "a stopped server must read as cold");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -533,10 +739,95 @@ mod tests {
             },
         ];
         let servers = crate::servers::Servers::new();
-        let dtos = tab_dtos(&views, &servers, Some("t2"));
+        let dtos = tab_dtos(&views, &servers, Some("t2"), &HashSet::new());
         assert!(!dtos[0].active);
         assert!(dtos[1].active);
         assert_eq!(dtos[1].group.as_deref(), Some("G"));
+    }
+
+    #[test]
+    fn tab_dto_marks_the_detached_flag_from_the_passed_in_set() {
+        // `tab_dtos` takes the detached-label set as a plain value (not `&AppState`) so this stays
+        // unit-testable without a live pop-out — see the function's own doc.
+        let views = vec![
+            lector_config::TabView {
+                label: "t1".into(),
+                group: None,
+                title: "A".into(),
+                dir: "/tmp".into(),
+                load_on_open: false,
+            },
+            lector_config::TabView {
+                label: "t2".into(),
+                group: None,
+                title: "B".into(),
+                dir: "/usr".into(),
+                load_on_open: false,
+            },
+        ];
+        let servers = crate::servers::Servers::new();
+        let detached: HashSet<String> = ["t2".to_string()].into_iter().collect();
+        let dtos = tab_dtos(&views, &servers, None, &detached);
+        assert!(!dtos[0].detached, "t1 was not popped out");
+        assert!(dtos[1].detached, "t2 was popped out");
+    }
+
+    #[test]
+    fn tab_payload_serializes_the_detached_flag() {
+        // The chrome renders the ⤢ mark off this field; if it stops being serialized the sidebar
+        // silently can't distinguish a detached tab (the "invisible until forwarded" trap, Rust
+        // side — the same one `chrome.js`'s `toComponentDto`-equivalent mapping must also forward).
+        let item = TabPayload {
+            label: "w1:tab-abc".into(),
+            title: "Docs".into(),
+            group: None,
+            loaded: true,
+            active: false,
+            detached: true,
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["detached"], serde_json::json!(true));
+        assert_eq!(json["loaded"], serde_json::json!(true));
+        assert_eq!(json["label"], serde_json::json!("w1:tab-abc"));
+    }
+
+    #[test]
+    fn detached_tab_labels_reflects_the_detached_map() {
+        // AppState::detached_tab_labels flattens AppState.detached (keyed by detached WINDOW label)
+        // into the set of TAB labels `tab_dtos`/`get_tabs` need — this is the glue between the two.
+        let state = AppState::new();
+        assert!(state.detached_tab_labels().is_empty());
+
+        state.detached.lock().unwrap().insert(
+            "shell-detach:w1:tab-abc".into(),
+            LectorDetached {
+                origin_wid: "w1".into(),
+                tab_label: "w1:tab-abc".into(),
+                port: 8080,
+            },
+        );
+        let labels = state.detached_tab_labels();
+        assert_eq!(labels.len(), 1);
+        assert!(labels.contains("w1:tab-abc"));
+    }
+
+    #[test]
+    fn unload_tab_state_check_skips_a_detached_label() {
+        // unload_tab's #[tauri::command] wrapper needs a real AppHandle to invoke (not unit
+        // testable here), but its guard condition — "is this label currently popped out" — is
+        // exactly detached_tab_labels(), which is. This pins the invariant the guard relies on: a
+        // tab marked detached must read as such regardless of what else is going on in `views`.
+        let state = AppState::new();
+        state.detached.lock().unwrap().insert(
+            "shell-detach:w1:tab-a".into(),
+            LectorDetached {
+                origin_wid: "w1".into(),
+                tab_label: "w1:tab-a".into(),
+                port: 1234,
+            },
+        );
+        assert!(state.detached_tab_labels().contains("w1:tab-a"));
+        assert!(!state.detached_tab_labels().contains("w1:tab-b"));
     }
 
     #[test]
@@ -608,7 +899,12 @@ mod tests {
         // must now say this tab is NOT active — otherwise the JS-side re-click would still take the
         // home_tab branch even though Rust's `active` map is clear.
         let views = state.views_for_window("w1");
-        let dtos = tab_dtos(&views, &state.servers, state.active_for("w1").as_deref());
+        let dtos = tab_dtos(
+            &views,
+            &state.servers,
+            state.active_for("w1").as_deref(),
+            &HashSet::new(),
+        );
         assert!(
             !dtos[0].active,
             "the unloaded tab must no longer read as active in the DTO chrome.js consumes"
@@ -657,5 +953,20 @@ mod tests {
         let views = vec![view("w1:tab-a"), view("w1:tab-b")];
         // tab-b unloaded (its own slot false), nothing else live → background.
         assert_eq!(neighbour_label(&views, "w1:tab-b", &[false, false]), None);
+    }
+
+    #[test]
+    fn neighbour_label_never_self_promotes_even_when_the_popped_tab_stays_live() {
+        // Unlike unload_tab (which stops the server, so the vacated slot is naturally false),
+        // pop_out_tab's own `live` vector still reports the popped tab's OWN slot as true — its
+        // server is deliberately never stopped. This pins that pick_live_neighbour's index-based
+        // exclusion still keeps it from "promoting" itself back into view: with only the popped
+        // tab live, the result must be None (background), not Some(popped tab).
+        let views = vec![view("w1:tab-a"), view("w1:tab-b"), view("w1:tab-c")];
+        assert_eq!(
+            neighbour_label(&views, "w1:tab-b", &[false, true, false]),
+            None,
+            "the popped tab's own liveness must never make it its own neighbour"
+        );
     }
 }

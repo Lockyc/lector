@@ -17,6 +17,12 @@
 //     tab and `select_tab` rejects. Swallowing it would make a missing repo look like a dead click.
 //   - The nav pill's own rejections (nav_back/nav_forward/home_tab) surface the same way — see
 //     `buildNavPill` below.
+//   - Pop-out (`onPopOut`/`pop_out_tab`) mirrors curator's implementation closely (same
+//     detachedLabels mirror, same onSelect-on-a-detached-row → raise_popped_window redirect, same
+//     ⌘⇧O "pop-out-tab" event), with one lector-specific difference: `popOutTab`'s rejection
+//     surfaces via `sb.setError`, not swallowed — consistent with this file's own error-surfacing
+//     convention above (curator swallows it, since curator's failure modes there are effectively
+//     unreachable; lector's `pop_out_tab` can genuinely fail, e.g. a `dir` that stopped existing).
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -33,6 +39,9 @@ const HOME_SVG = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" st
 
 let activeLabel = null; // controller mirror of the component's active tab (the nav pill acts on it)
 let navBtns = [];
+// Labels currently popped out into their own detached window (from the DTO). A click on a detached
+// row means "raise its window" (raise_popped_window), not "select" — so onSelect consults this.
+const detachedLabels = new Set();
 
 function buildNavPill() {
   const pill = document.createElement("div");
@@ -69,6 +78,10 @@ function setActiveLabel(label) {
 async function buildDto() {
   const id = await invoke("window_identity");
   const tabs = await invoke("get_tabs");
+  // Refresh the detached-label mirror so onSelect can tell a popped-out row (raise its window) from
+  // a normal one (select). Rebuilt each DTO so it clears when a tab redocks.
+  detachedLabels.clear();
+  tabs.forEach((t) => { if (t.detached) detachedLabels.add(t.label); });
   return {
     title: (id && id.title) || "",
     colour: (id && id.colour) ?? null,
@@ -86,6 +99,9 @@ async function buildDto() {
       attention: null, // docs don't notify — there is no badge/notification path to feed this
       presence: null, // lector has no session-presence concept
       killable: false, // lector has no kill concept
+      // Popped out into its own window: chrome-core renders the ⤢ mark and routes a row click to
+      // onSelect, which the controller maps to "raise the window". Invisible unless forwarded here.
+      detached: !!t.detached,
       warn: false,
     })),
   };
@@ -127,6 +143,16 @@ async function unloadTab(tabId) {
   await refresh();
 }
 
+// Shared by chrome-core's per-row ⤢ control (onPopOut) and the ⌘⇧O menu shortcut's "pop-out-tab"
+// event — both pop the given/active tab out into its own window. A failure surfaces the same way
+// every other command here does (this file's header note) rather than being swallowed. Refresh so
+// the origin's sidebar shows the row's ⤢ detached mark and its newly-promoted active tab (get_tabs
+// carries both).
+async function popOutTab(tabId) {
+  await invoke("pop_out_tab", { label: tabId }).catch((e) => sb.setError(String(e)));
+  await refresh();
+}
+
 async function mountChrome() {
   const id = await invoke("window_identity");
   const title = (id && id.title) || "";
@@ -141,6 +167,11 @@ async function mountChrome() {
     document.getElementById("sidebar"),
     {
       onSelect(tabId, { wasActive }) {
+        // A popped-out row has no local webview to select — a click raises its detached window.
+        if (detachedLabels.has(tabId)) {
+          invoke("raise_popped_window", { label: tabId }).catch(() => {});
+          return;
+        }
         // Mirror chrome-core's own optimistic highlight move so the nav pill enables immediately
         // on click, not only after the next refresh() (curator does the same in its onSelect).
         setActiveLabel(tabId);
@@ -149,6 +180,9 @@ async function mountChrome() {
         invoke(wasActive ? "home_tab" : "select_tab", { label: tabId }).catch((e) => sb.setError(String(e)));
       },
       onUnload: unloadTab,
+      // Pop the tab out into its own window (recreated webview, same running server/port). Refresh
+      // so the row picks up its ⤢ detached mark and the origin's newly-promoted active tab.
+      onPopOut: popOutTab,
       onResize(width) {
         // The chrome is the window's full-size main webview: the sidebar's visible width is CSS
         // (set here); the flex #content-hole follows, and reportRect tells Rust where to put the
@@ -235,6 +269,11 @@ listen("config-error", (event) => {
 // routes it via emit_to_focused_chrome, so only the focused window's chrome receives it.
 listen("close-tab", () => {
   if (activeLabel) unloadTab(activeLabel);
+});
+// The menu spine's ⌘⇧O (Tab ▸ Pop Out Tab): pop THIS window's active tab out into its own window.
+// lib.rs routes it via emit_to_focused_chrome, so only the focused window's chrome receives it.
+listen("pop-out-tab", () => {
+  if (activeLabel) popOutTab(activeLabel);
 });
 
 mountChrome();

@@ -12,7 +12,7 @@ pub mod identity;
 
 use serde::{Deserialize, Serialize};
 
-/// What to open when a window launches. `false` (default) → blank; `true` → its first tab;
+/// What to open when a window launches. `true` (default) → its first tab; `false` → blank;
 /// a string → the tab whose `title` matches (falling back to the first).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -22,7 +22,8 @@ pub enum OpenOnLaunch {
 }
 impl Default for OpenOnLaunch {
     fn default() -> Self {
-        OpenOnLaunch::Toggle(false)
+        // Fleet default: open on the first tab (matching warden, which always does; and curator).
+        OpenOnLaunch::Toggle(true)
     }
 }
 
@@ -750,10 +751,22 @@ title = "Docs"
 
     #[test]
     fn startup_label_honours_open_on_launch() {
-        let blank = parse_and_validate(VALID).unwrap().0;
+        // Default (no `open_on_launch` key) opens the first tab — the fleet default.
+        let default = parse_and_validate(VALID).unwrap().0;
+        assert_eq!(
+            default.windows[0].startup_label(),
+            Some(default.windows[0].tab_views()[0].label.clone())
+        );
+
+        // Explicit `open_on_launch = false` opts out → blank.
+        let src = VALID.replace(
+            "title = \"Docs\"",
+            "title = \"Docs\"\nopen_on_launch = false",
+        );
+        let blank = parse_and_validate(&src).unwrap().0;
         assert_eq!(blank.windows[0].startup_label(), None);
 
-        let first = parse_and_validate(&format!("{VALID}\n")).unwrap().0;
+        // `open_on_launch = true` is the explicit form of the default → first tab.
         let src = VALID.replace(
             "title = \"Docs\"",
             "title = \"Docs\"\nopen_on_launch = true",
@@ -761,7 +774,7 @@ title = "Docs"
         let eager = parse_and_validate(&src).unwrap().0;
         assert_eq!(
             eager.windows[0].startup_label(),
-            Some(first.windows[0].tab_views()[0].label.clone())
+            Some(eager.windows[0].tab_views()[0].label.clone())
         );
 
         let src = VALID.replace(
@@ -769,7 +782,7 @@ title = "Docs"
             "title = \"Docs\"\nopen_on_launch = \"compositor\"",
         );
         let named = parse_and_validate(&src).unwrap().0;
-        let want = first.windows[0]
+        let want = named.windows[0]
             .tab_views()
             .into_iter()
             .find(|v| v.title == "compositor")

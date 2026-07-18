@@ -1,9 +1,12 @@
 //! Window + content webview management. lector's sidebar chrome is the window's MAIN webview
 //! (hole-punch, matching curator/warden): it spans the whole window, so `data-tauri-drag-region` in
 //! it moves the window natively (a child webview can't). Rust-positioned `add_child` content
-//! webviews composite ABOVE it, filling the content hole to the right of the sidebar. lector shows
-//! exactly one tab at a time (no curator-style "stay live in the background" tabs), so switching is
-//! just show-this-one-hide-the-rest.
+//! webviews composite ABOVE it, filling the content hole to the right of the sidebar. A *visited*
+//! tab stays live in the background: its server keeps running and its content webview stays built
+//! but hidden (`raise_only` below only hides a webview, it never closes one) — only the *active* tab
+//! is shown. Switching is show-this-one-hide-the-rest; only `unload_tab` (`commands.rs`) actually
+//! closes a webview, and it promotes the nearest still-live neighbour rather than leaving the empty
+//! background, unless this was the last live tab.
 //!
 //! **Link escape.** A doc linking off-site (`https://github.com/…`) would otherwise navigate the
 //! tab off its local compositor site and strand it — the tab has no back button and no way home.

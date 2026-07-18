@@ -203,10 +203,13 @@ impl AppState {
     /// This is the state half of `unload_tab` — split out from the `#[tauri::command]` wrapper so it
     /// needs no `AppHandle`/webview and is directly unit-testable.
     ///
-    /// Clearing (rather than promoting a neighbour, as curator does) is deliberate: lector shows
-    /// exactly one tab at a time and never eager-starts others (see `lib.rs`'s `setup` — load_on_open
-    /// eager-start is Task 10's concern), so there is never an already-live sibling to promote to.
-    /// Leaving a stale `active` label here is exactly the Finding-1 bug: `get_tabs`' DTO would keep
+    /// This function itself never promotes a neighbour — it only tears down and clears. The
+    /// `unload_tab` **command** layers neighbour-promotion on top, via `neighbour_label` delegating
+    /// to `shell_core::pick_live_neighbour`. Clearing active here is therefore now specifically the
+    /// *last-live-tab* (empty background) path, not the always-path: lector keeps every visited tab's
+    /// server live in the background (`select`/`webviews::show` never stop a previous tab, and
+    /// `webviews::raise_only` only hides it), so a live sibling to promote to usually exists. Leaving
+    /// a stale `active` label here regardless is exactly the Finding-1 bug: `get_tabs`' DTO would keep
     /// reporting the cold tab as active, `chrome.js`'s `wasActive` would stay true on a re-click, and
     /// the click would route to `home_tab` (which errors — the server is stopped) instead of
     /// `select_tab` (which would restart it).
@@ -293,14 +296,42 @@ pub fn select_tab(
     select(&app, &state, &label)
 }
 
+/// The label to promote to active after `unloaded` is closed, given this window's views in render
+/// order and a parallel liveness vector (`live[i]` = view `i`'s server is up). Delegates the index
+/// policy to shell-core so lector agrees with warden and curator: nearest live neighbour, else
+/// `None` (→ empty background). Pure — split from `unload_tab` so it is unit-testable with plain
+/// bools, no real servers.
+fn neighbour_label(views: &[TabView], unloaded: &str, live: &[bool]) -> Option<String> {
+    let idx = views.iter().position(|v| v.label == unloaded)?;
+    shell_core::pick_live_neighbour(idx, live).map(|n| views[n].label.clone())
+}
+
 /// Unload a tab: stop its server, close its content webview, and — if it was the window's active
-/// tab — clear active so the empty state paints and the next click restarts it via `select_tab`
-/// rather than erroring through `home_tab` (see `AppState::unload`'s doc for the full failure chain
-/// this prevents). The tab's content is regenerated from disk on the next select, so nothing is lost.
+/// tab — clear active (see `AppState::unload`'s doc for the full failure chain this prevents), then
+/// promote the nearest still-live neighbour so the hole shows another loaded tab rather than the
+/// empty background — background only when this was the last live tab. The tab's content is
+/// regenerated from disk on the next select, so nothing is lost.
 #[tauri::command]
 pub fn unload_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    let window = label.split(':').next().unwrap_or_default().to_string();
+    let was_active = state.active_for(&window).as_deref() == Some(label.as_str());
+    // Tear down this tab: stop its server and clear active if it was showing (AppState::unload),
+    // then destroy its content webview.
     state.unload(&label);
     crate::webviews::close(&app, &label);
+    // If the tab we just closed was the active one, promote the nearest still-live neighbour so the
+    // hole shows another loaded tab rather than the empty background — background only when this was
+    // the last live tab. The neighbour is already live, so `select`'s `servers.start` no-ops on it.
+    if was_active {
+        let views = state.views_for_window(&window);
+        let live: Vec<bool> = views
+            .iter()
+            .map(|v| state.servers.is_alive(&v.label))
+            .collect();
+        if let Some(next) = neighbour_label(&views, &label, &live) {
+            let _ = select(&app, &state, &next);
+        }
+    }
 }
 
 /// The invoking window's identity for the chrome banner, plus the whole-app chrome settings.
@@ -599,5 +630,32 @@ mod tests {
             Some("w1:tab-b"),
             "unloading a non-active tab must not clear or change a different tab's active state"
         );
+    }
+
+    fn view(label: &str) -> lector_config::TabView {
+        lector_config::TabView {
+            label: label.into(),
+            group: None,
+            title: label.into(),
+            dir: "/tmp".into(),
+            load_on_open: false,
+        }
+    }
+
+    #[test]
+    fn neighbour_label_promotes_the_nearest_live_left_neighbour() {
+        let views = vec![view("w1:tab-a"), view("w1:tab-b"), view("w1:tab-c")];
+        // unloading the middle tab, with a and c both live → prefer the left one (came-from).
+        assert_eq!(
+            neighbour_label(&views, "w1:tab-b", &[true, false, true]),
+            Some("w1:tab-a".to_string())
+        );
+    }
+
+    #[test]
+    fn neighbour_label_is_none_when_it_was_the_last_live_tab() {
+        let views = vec![view("w1:tab-a"), view("w1:tab-b")];
+        // tab-b unloaded (its own slot false), nothing else live → background.
+        assert_eq!(neighbour_label(&views, "w1:tab-b", &[false, false]), None);
     }
 }

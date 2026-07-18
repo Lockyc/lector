@@ -269,7 +269,8 @@ curator's and warden's. Releases are notarized `.app` bundles with an in-app min
 updater (`tauri-plugin-updater`), mirroring curator's and warden's release shape: bump the
 version, tag `v<version>`, fast-forward `main`, publish a GitHub release with notes, then attach
 the notarized artifacts via `just release` (`scripts/release.sh`, generated from shell-core,
-parameterized by the tracked `scripts/tooling.env`). There is no CI — run `just gate` locally
+parameterized by the tracked `scripts/tooling.env`). CI (`.github/workflows/ci.yml`) runs
+`just gate` on every push/PR to `main` and `dev`; run `just gate` locally too — the fast loop —
 and confirm it's green before tagging.
 
 **What `just release` needs from the build environment** (it is env-driven, and refuses to run

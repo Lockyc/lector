@@ -48,8 +48,9 @@ a placeholder icon.
   `cargo install tauri-cli --version ^2`)
 - `just test` — runs the Rust test suite (`cargo test --workspace`)
 - `just gate` — the full pre-merge gate: fmt-check, clippy, tests, config fmt-check, and the
-  active-`[patch]` guard. There is no CI — run this locally and confirm it's green before
-  committing or tagging a release.
+  active-`[patch]` guard. CI (`.github/workflows/ci.yml`) runs this same gate on every push/PR to
+  `main` and `dev`; run it locally too — the fast loop — and confirm it's green before committing
+  or tagging a release.
 
 Run `just` with no arguments to list every recipe.
 

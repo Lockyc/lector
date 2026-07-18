@@ -96,13 +96,15 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
 
 - **lector contributes no app-specific menu items.** The App, Config, and Window submenus are the
   shared spine (`shell_core::menu::build_spine`, called in `lib.rs`'s `run()`); lector's own **Tab**
-  submenu holds nothing but the spine's `Close Tab` item (⌘W). curator's Tab submenu has Reload
-  Tab / Reset All Tabs / Open Developer Tools; warden's has digit-mode jumps and Reopen Last
-  Closed — lector needs none of that. **compositor's file watcher already live-reloads every open
-  tab on save**, so a manual "Reload Tab" item would be a no-op button; there is no per-tab
-  "session" to reset (a compositor `SiteServer` has no state beyond the served files); and DevTools
-  is one keystroke away regardless. The Tab submenu exists purely to hold ⌘W (the family's Close
-  Tab standard), not because lector has anything of its own to put there.
+  submenu holds only the spine's own `Close Tab` (⌘W) and `Pop Out Tab` (⌘⇧O) items — both defined
+  by the spine, just spliced into lector's Tab submenu rather than the spine's own. curator's Tab
+  submenu has Reload Tab / Reset All Tabs / Open Developer Tools; warden's has digit-mode jumps and
+  Reopen Last Closed — lector needs none of that. **compositor's file watcher already live-reloads
+  every open tab on save**, so a manual "Reload Tab" item would be a no-op button; there is no
+  per-tab "session" to reset (a compositor `SiteServer` has no state beyond the served files); and
+  DevTools is one keystroke away regardless. The Tab submenu exists purely to hold ⌘W and ⌘⇧O (the
+  family's Close Tab standard, plus the pop-out feature — see *Tab pop-out* below), not because
+  lector has anything else of its own to put there.
 - **The home surface** (`shell_core::home::HOME_LABEL`, `skip_labels` in `register_plugins`) is
   what a fresh install shows: before this, lector built zero windows and no menu when
   `~/.config/lector/config.toml` didn't exist, so it launched to a live, invisible, unrecoverable
@@ -111,6 +113,62 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
 - **`appName: "lector"`** (`src/chrome.js`'s mount config) names the app in chrome-core's
   `#cc-titlebar` strip beside the traffic lights; `src/chrome.css`'s `#sidebar` carries no
   `padding-top` of its own — chrome-core owns that inset now.
+
+## Tab pop-out: detach a tab into its own window
+
+A ⤢ control on each sidebar row (chrome-core's `onPopOut`) and **Pop Out Tab (⌘⇧O)** (the shared
+menu spine, spliced into lector's own Tab submenu — see above) pop the origin window's active tab
+into its own **banner-only detached window** (`shell-core`'s shared detach shell,
+`shell_core::detach::open_detached`). Closing that window returns the tab to its origin — reopening
+the origin first if the user closed it while the tab was out.
+
+- **The defining property: recreate on the SAME running server, not stop-and-restart.** A lector
+  tab's content is a `compositor serve_handle()` loop bound to a loopback port; lector can move
+  neither a server nor a webview between windows, so `pop_out_tab` (`commands.rs`) closes the
+  origin's content webview and `webviews::show_on` builds a fresh one on the detached window
+  pointed at the exact same port. Returning (`redock`, in `lib.rs`) does the mirror-image
+  recreation back on the origin, reusing the port `LectorDetached` recorded. The compositor serve
+  loop and its file watcher run continuously across the whole hop, so the pop is near-lossless —
+  live-reload-on-save keeps working throughout, and only in-page state a webview recreation can't
+  carry (scroll position, in-page navigation) is lost.
+- **The crux footgun this shipped with: the server must survive the entire hop, and three
+  separate paths could have killed it.**
+  - `pop_out_tab` itself closes the origin's content webview but **never calls `Servers::stop`** —
+    only `webviews::close` (webview teardown), never `AppState::unload` (which would stop the
+    server).
+  - `unload_tab` **no-ops on a detached tab** (`state.detached_tab_labels().contains(&label)` guard,
+    checked first thing): chrome-core's live/unload dot stays fully interactive on a detached row
+    (only the ⤢ control itself is suppressed), so a stray hover-✕ or the ⌘W accelerator can still
+    reach `unload_tab` for a popped-out tab. Without the guard it would stop the server backing the
+    still-open detached window out from under it.
+  - `reload::reconcile`'s `Servers::retain(&labels)` **unions in `state.detached_tab_labels()`**
+    before retaining, so a hot-reload whose new config drops (or relabels, via a changed `dir`) a
+    popped-out tab does not stop that tab's server mid-session. The server-stop for a *genuinely*
+    removed tab is correctly deferred to `redock`'s own tab-removed branch (`state.view(&tab_label)
+    .is_none()` → `state.servers.stop(&tab_label)`), which only fires once the tab actually comes
+    home to find no config slot left for it.
+- **State:** `AppState.detached: Mutex<HashMap<detached_label, LectorDetached>>`, where
+  `LectorDetached { origin_wid, tab_label, port }` — kept **separate from `window_meta`** so
+  hot-reload reconcile and the Window submenu never see a detached window as a real one; the home
+  surface still counts it (`reload::reconcile_home` folds `has_detached` into `has_windows`) since
+  it's a real surface on screen. `detached_tab_labels()` flattens the map to the set of tab labels,
+  used by `tab_dtos` to set each row's `detached` flag and by the `unload_tab`/`retain` guards above.
+- **Chrome-facing:** `TabPayload.detached` is forwarded through `chrome.js`'s DTO mapping (a new
+  DTO field is invisible to the chrome until that mapping forwards it — the same trap the `tree`/
+  `treePath` footgun elsewhere in this file describes); a detached row renders muted with its ⤢
+  control suppressed, and clicking it calls `raise_popped_window` instead of `select_tab` — there's
+  no local webview to select, so "select" means "bring the popped-out window forward."
+- **Neither `pop_out_tab` nor `redock` ever holds a lock across the window build or a webview
+  call.** `pop_out_tab` reads `window_meta()`/starts the server (both release their locks before
+  returning) and only then calls `open_detached`/`show_on` with no lock held; `redock` peeks
+  `detached` (clone out, lock released), reopens the origin window if needed, then takes and removes
+  the entry in a second short-lived lock before recreating the webview.
+- **`is_quitting` makes `redock` a no-op during ⌘Q.** A new `RunEvent::ExitRequested` arm spliced
+  into the existing `app.run(|_, event| …)` closure sets a `static IS_QUITTING: AtomicBool`
+  (`mark_quitting`/`is_quitting`, `lib.rs`) before any window's `Destroyed` fires; `redock` checks
+  it first and returns immediately, so a detached window's teardown during quit doesn't reopen its
+  origin or recreate a webview while every server is about to be shut down wholesale anyway
+  (`RunEvent::Exit`'s `servers.shutdown_all()`).
 
 ## The `fnv1a_64` / `DefaultHasher` footgun
 

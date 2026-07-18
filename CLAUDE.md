@@ -1,3 +1,8 @@
+---
+type: architecture
+description: Agent orientation for lector — purpose, the four shared cores, footguns, and build/release model.
+---
+
 # lector — agent notes
 
 ## Purpose

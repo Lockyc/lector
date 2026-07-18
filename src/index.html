@@ -18,23 +18,32 @@
            sidebar BODY drag is stamped by chrome-core per the windowDrag DTO flag. -->
       <aside id="sidebar" data-tauri-drag-region></aside>
       <div id="content-hole" data-tauri-drag-region>
-        <!-- Muted lector mark — shown by the controller when no tab is selected. Composited BEHIND
-             the content webviews (a live tab occludes it). Opaque. -->
+        <!-- Muted lector mark (open book — lector renders local documentation) — shown by the
+             controller when no tab is selected. Composited BEHIND the content webviews (a live tab
+             occludes it). Opaque. This is a placeholder pending real brand art (see docs/FOLLOWUPS).
+             Deliberately NOT curator's tabs-and-page mark, which lector was scaffolded from. -->
         <div id="empty-state">
           <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
             <rect x="0" y="0" width="1024" height="1024" rx="224" fill="#333333" />
-            <rect x="470" y="232" width="404" height="560" rx="40" fill="#555555" />
-            <g fill="#444444">
-              <rect x="520" y="300" width="240" height="34" rx="17" />
-              <rect x="520" y="378" width="304" height="22" rx="11" />
-              <rect x="520" y="430" width="304" height="22" rx="11" />
-              <rect x="520" y="482" width="220" height="22" rx="11" />
-            </g>
+            <!-- Two facing pages of an open book. -->
             <g fill="#555555">
-              <rect x="150" y="232" width="270" height="104" rx="30" />
-              <rect x="150" y="360" width="270" height="104" rx="30" />
-              <rect x="150" y="488" width="270" height="104" rx="30" />
-              <rect x="150" y="616" width="270" height="104" rx="30" />
+              <rect x="176" y="312" width="312" height="400" rx="28" />
+              <rect x="536" y="312" width="312" height="400" rx="28" />
+            </g>
+            <!-- Center spine. -->
+            <rect x="496" y="300" width="32" height="424" rx="12" fill="#444444" />
+            <!-- Text lines on each page. -->
+            <g fill="#444444">
+              <rect x="216" y="372" width="232" height="22" rx="11" />
+              <rect x="216" y="424" width="232" height="22" rx="11" />
+              <rect x="216" y="476" width="232" height="22" rx="11" />
+              <rect x="216" y="528" width="232" height="22" rx="11" />
+              <rect x="216" y="580" width="180" height="22" rx="11" />
+              <rect x="576" y="372" width="232" height="22" rx="11" />
+              <rect x="576" y="424" width="232" height="22" rx="11" />
+              <rect x="576" y="476" width="232" height="22" rx="11" />
+              <rect x="576" y="528" width="232" height="22" rx="11" />
+              <rect x="576" y="580" width="180" height="22" rx="11" />
             </g>
           </svg>
         </div>

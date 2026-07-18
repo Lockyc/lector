@@ -1,0 +1,24 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      cargo:
+        patterns: ["*"]
+    ignore:
+      # Shared cores are git-pinned by the lockstep grid (lockstep.sh) — the pin/
+      # release flow owns their revs; Dependabot must never bump them.
+      - dependency-name: chrome-core
+      - dependency-name: config-core
+      - dependency-name: shell-core
+      - dependency-name: compositor
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

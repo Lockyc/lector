@@ -28,7 +28,13 @@ pub fn reconcile(state: &AppState, windows: &[WindowConfig]) -> Vec<TabView> {
     let all_views: Vec<TabView> = windows.iter().flat_map(WindowConfig::tab_views).collect();
     state.set_views(all_views.clone());
 
-    let labels: HashSet<String> = all_views.iter().map(|v| v.label.clone()).collect();
+    let mut labels: HashSet<String> = all_views.iter().map(|v| v.label.clone()).collect();
+    // A popped-out tab's content webview lives in its detached window, still backed by this
+    // server, even if its config entry vanished or its dir changed (recomputing its label) in
+    // this very reload — reconcile must not stop it out from under that window. `redock`'s
+    // tab-removed branch is what stops the server once the tab actually comes home to find no
+    // config slot: `if state.view(&tab_label).is_none() { state.servers.stop(&tab_label); }`.
+    labels.extend(state.detached_tab_labels());
     state.servers.retain(&labels);
 
     for view in &all_views {
@@ -174,6 +180,49 @@ mod tests {
             !state.servers.is_alive(&label),
             "a tab removed from the config must have its server stopped"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reconcile_keeps_a_detached_tabs_server_alive_when_its_config_entry_vanishes() {
+        // The bug this fixes: a popped-out tab's server must survive a reconcile whose new config
+        // no longer has that tab's label, because the tab's content webview is still live in its
+        // detached window, still being served from that port. Only `redock`'s tab-removed branch
+        // is allowed to stop it, once the tab actually comes home to find no config slot.
+        let dir = scratch("detached");
+        let win = window_with("W", &dir, true);
+        let state = AppState::new();
+        reconcile(&state, std::slice::from_ref(&win));
+        let label = state.views_for_window(&lector_config::identity::window_id("W"))[0]
+            .label
+            .clone();
+        assert!(state.servers.is_alive(&label));
+
+        // Mark the tab as popped out into its own detached window (mirrors what `pop_out_tab` does
+        // to `AppState::detached` — the reconcile path must not care about the rest of the value).
+        state.detached.lock().unwrap().insert(
+            "detached-window-1".to_string(),
+            crate::commands::LectorDetached {
+                origin_wid: "W".to_string(),
+                tab_label: label.clone(),
+                port: state.servers.port(&label).unwrap_or(0),
+            },
+        );
+
+        // New config for the same window has no tabs at all — same shape as the removed-tab test,
+        // except this tab is currently detached.
+        let empty = lector_config::parse_and_validate("[[window]]\ntitle = \"W\"\n")
+            .unwrap()
+            .0
+            .windows
+            .remove(0);
+        reconcile(&state, std::slice::from_ref(&empty));
+
+        assert!(
+            state.servers.is_alive(&label),
+            "reconcile must not stop a detached tab's server just because its config entry vanished"
+        );
+        state.servers.shutdown_all();
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -23,34 +23,13 @@ use tauri::{
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
-/// Default sidebar width. `Identity` (in `commands.rs`) deliberately carries no `default_width`
-/// field, so `src/chrome.js`'s `(id && id.default_width) || 240` always takes its literal `240`
-/// fallback — this constant MUST match that literal by hand (no value crosses the IPC boundary to
-/// keep them in sync); see `src/chrome.js`'s own comment at the same value.
-pub const CHROME_W: f64 = 240.0;
-
-/// The content hole's rect in logical px (top-left origin), exactly as the chrome measures its
-/// `#content-hole` element via `getBoundingClientRect` and reports it through `set_hole_rect`. This
-/// is the single source of truth for content-webview placement — the chrome owns the sidebar width
-/// and its resize clamp; Rust just tracks and applies the rect it reports.
-#[derive(Debug, Clone, Copy)]
-pub struct HoleRect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-/// The best-guess hole before the chrome's first `set_hole_rect`: full height, offset by the
-/// default sidebar width. The first report corrects it.
-fn initial_hole(win_w: f64, win_h: f64) -> HoleRect {
-    HoleRect {
-        x: CHROME_W,
-        y: 0.0,
-        width: (win_w - CHROME_W).max(0.0),
-        height: win_h,
-    }
-}
+/// The hole-punch compositing primitives — the content-hole rect type ([`HoleRect`]), its
+/// default-sidebar-width offset ([`CHROME_W`], which MUST match `src/chrome.js`'s literal `240`
+/// fallback since no value crosses the IPC boundary), the launch-time best-guess hole
+/// ([`initial_hole`]), and the child-webview placement ([`layout_webviews`]) — are byte-identical
+/// with curator and live in `shell_core::compositing`. Re-exported so the rest of this module keeps
+/// naming them `webviews::{CHROME_W, HoleRect, initial_hole, layout_webviews}` unchanged.
+pub use shell_core::compositing::{initial_hole, layout_webviews, HoleRect, CHROME_W};
 
 /// Each open window's current content hole, keyed by window id. Module-owned rather than a field on
 /// the shared `AppState`: webview placement is entirely this module's concern, and keeping it here
@@ -96,18 +75,6 @@ pub fn build_window(
         .insert(window_id.to_string(), initial_hole(win_w, win_h));
 
     Ok(window)
-}
-
-/// Position every content webview to fill the given hole. The chrome is skipped (its label equals
-/// the window label, unlike a content webview's `{window_id}:tab-<hash>`).
-fn layout_webviews(window: &Window, hole: HoleRect) {
-    for wv in window.webviews() {
-        if wv.label() == window.label() {
-            continue;
-        }
-        let _ = wv.set_position(LogicalPosition::new(hole.x, hole.y));
-        let _ = wv.set_size(LogicalSize::new(hole.width.max(0.0), hole.height.max(0.0)));
-    }
 }
 
 /// Record a freshly-reported hole and reposition this window's content webviews to match. Called by

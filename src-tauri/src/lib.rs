@@ -1,4 +1,3 @@
-use lector_config::hash::fnv1a_64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
@@ -35,28 +34,6 @@ pub(crate) fn detach_window_token(tab_label: &str) -> String {
 /// 36px). Only used to size the recreated webview's BIRTH rect so it doesn't flash full-height for
 /// one frame before `detach.html`'s own `set_hole_rect` lands and reports the exact hole.
 pub(crate) const DETACH_BANNER_H: f64 = 36.0;
-
-/// Filename for the window-state plugin's saved bounds, scoped per config file. The plugin keys
-/// window state by Tauri label *within one file*; two different configs can reuse a window title,
-/// so scope the filename by a stable hash of the (canonicalized) config path to keep their bounds
-/// separate — otherwise `just run` (examples/config.toml) and a real ~/.config/lector/config.toml
-/// collide on identical window titles and the dev window restores the real one's geometry.
-///
-/// The hash is `fnv1a_64` — a fixed, toolchain-independent algorithm — deliberately NOT `std`'s
-/// `DefaultHasher`, whose output isn't guaranteed stable across Rust releases: a
-/// `rust-toolchain.toml` bump would silently change the filename and reset every window to default
-/// bounds, reading as "lector forgot my layout" rather than as a toolchain problem. curator shipped
-/// exactly that bug (fixed 2026-07-16). The algorithm is pinned by known-vectors in
-/// `lector_config::hash` — imported, not re-implemented here.
-///
-/// Moving/renaming the config orphans its saved bounds — acceptable, since the path is otherwise
-/// stable.
-fn window_state_filename() -> String {
-    let path = lector_config::resolve_config_path();
-    let canonical = std::fs::canonicalize(&path).unwrap_or(path);
-    let hash = fnv1a_64(canonical.as_os_str().as_encoded_bytes());
-    format!(".window-state-{hash:016x}.json")
-}
 
 /// Print config-load warnings to stderr. Shared shape with `validate_cli`'s own printing (kept
 /// separate rather than factored together — that one also prints the resolved tab tree, this one
@@ -276,9 +253,10 @@ pub(crate) fn reload_now(app: &tauri::AppHandle) {
 }
 
 pub fn run() {
+    let config_path = lector_config::resolve_config_path();
     let app = shell_core::register_plugins(
         tauri::Builder::default(),
-        window_state_filename(),
+        Some(&config_path),
         &[shell_core::home::HOME_LABEL],
     )
     .manage(commands::AppState::new())
@@ -562,14 +540,6 @@ pub fn validate_cli(path: Option<std::path::PathBuf>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn window_state_filename_shape_is_stable() {
-        // Same config path → same filename, every run (no per-run seed).
-        assert_eq!(window_state_filename(), window_state_filename());
-        assert!(window_state_filename().starts_with(".window-state-"));
-        assert!(window_state_filename().ends_with(".json"));
-    }
 
     #[test]
     fn detach_token_round_trips_through_the_detached_label() {

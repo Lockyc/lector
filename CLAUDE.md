@@ -18,7 +18,7 @@ lector curates local documentation.
 
 **The app is complete and functional end-to-end.** `crates/lector-config` is complete
 (parse/validate/format/identity, unit-tested standalone). `src-tauri` has the full app shell: the
-manifest pinning all four cores, `build.rs`, `tauri.conf.json`, `window_state_filename()`, the
+manifest pinning all four cores, `build.rs`, `tauri.conf.json`, the
 `Servers` supervisor (`servers.rs` — one `compositor::serve_handle()` per open tab, idempotent
 start/stop/retain/shutdown_all, dead-thread detection via `reap`/`is_alive`), the chrome controller
 (`src/chrome.js` + the commands it calls in `commands.rs`), content-webview management with link
@@ -218,17 +218,23 @@ collapsible folder-tree section with a `⟳` rescan button. The leaf is `{ name,
 
 ## The `fnv1a_64` / `DefaultHasher` footgun
 
-`window_state_filename()` (keys `tauri-plugin-window-state`'s persisted-bounds file to the
-config path) must use a **fixed** hash algorithm, never `std::hash::DefaultHasher` — its output
-is **not** guaranteed stable across Rust releases, so a toolchain bump would silently change the
-filename and reset every window's saved bounds. It reads as "the app forgot my layout", never as
-a toolchain problem. curator shipped this bug (fixed 2026-07-16); lector must not repeat it.
-**lector's single copy of the fix lives in `crates/lector-config/src/hash.rs`** — a small
-`fnv1a_64`, pinned by a known-vectors test. shell-core deliberately does **not** own this hash
-(see shell-core's own CLAUDE.md dividing line): each consumer hashes its own config path, so the
-~8-line duplication is the accepted cost of that boundary. Do not reintroduce `DefaultHasher` —
-its output's cross-release instability is the real constraint here; the hash's *location* is not,
-so sharing it later is fine if the shell-core boundary ever changes.
+Any hash that drives a **persistent identifier** must use a **fixed** algorithm, never
+`std::hash::DefaultHasher` — its output is **not** guaranteed stable across Rust releases, so a
+toolchain bump would silently change the value (reading as "the app forgot my layout / remapped my
+tabs", never as a toolchain problem). lector has two such hashes, in two domains, each pinned by a
+known-vectors test:
+
+- **Tab label identity** — `crates/lector-config/src/hash.rs::fnv1a_64` hashes a tab's canonicalized
+  dir into its stable webview label. This copy stays in the config crate (label identity is its
+  domain); a drift here would remap every tab's webview.
+- **Window-state filename** — lifted to shell-core: `register_plugins` derives the persisted-bounds
+  filename from the config path via `shell_core::state_filename` (shell-core's own
+  test-vector-pinned `fnv1a_64`). lector no longer owns this hash; it just hands shell-core the path.
+  The canonicalize→hash→format *policy* is identical across the sibling apps — only the path is
+  app-specific — so it lives in shell-core once, not copied per app.
+
+curator shipped a `DefaultHasher` window-state bug (fixed 2026-07-16). Do not reintroduce
+`DefaultHasher` for either hash.
 
 ## The capabilities-file footgun: `has_app_manifest()` bypass does not cover core plugins
 

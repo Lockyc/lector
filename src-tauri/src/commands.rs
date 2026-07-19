@@ -2,6 +2,10 @@
 //! is the intended caller of these, but unlike curator there is no `is_chrome_caller`-style
 //! per-caller gate here — Tauri's own IPC dispatch already does the job for the shape this app has.
 //!
+//! The general model — why a command needs a label gate, or doesn't — is single-sourced in
+//! **shell-core's CLAUDE.md ("command-isolation security model")**; what follows is lector's own
+//! verification of it against the pinned tauri source.
+//!
 //! The sidebar is the window's MAIN webview, loaded from `frontendDist` (`tauri://…`), so Tauri's
 //! `is_local_url` (`webview/mod.rs`) classifies it `Origin::Local`. Every content webview instead
 //! loads `http://127.0.0.1:{port}/` — a compositor server's loopback address, which matches none of

@@ -184,6 +184,38 @@ the origin first if the user closed it while the tab was out.
   origin or recreate a webview while every server is about to be shut down wholesale anyway
   (`RunEvent::Exit`'s `servers.shutdown_all()`).
 
+## Project-tree roots: discover repos under a dir
+
+A `[[window.root]]` block points at a projects dir; every git repo under it (to `depth`, default
+`config_core::DEFAULT_ROOT_DEPTH`) becomes a discovered doc tab, rendered as chrome-core's
+collapsible folder-tree section with a `⟳` rescan button. The leaf is `{ name, dir, depth }` only —
+`shell`/`cmd`/`probe`/`kill` are warden's and are rejected by `deny_unknown_fields`.
+
+- **Discovery is shared, synthesis is per-app.** config-core owns the leaf-free discovery machinery
+  (`scan_root` walks the tree stopping at every `.git`; `resolve_root_dir` validates the
+  `{name,dir,depth}`; `discover_projects(&[RootDir]) → Vec<DiscoveredProject>` flattens roots into
+  `{path, tree_path, section}`), shared with warden. lector owns only the *synthesis*:
+  `WindowConfig::tab_views_with_discovered` maps each `DiscoveredProject` onto a doc `TabView`. This
+  is the constellation's "config-core owns discovery, the consuming app bridges" seam — never a
+  leaf-generic in config-core (see its charter).
+- **Synthesized tabs are ALWAYS lazy** (`load_on_open: false`) — a root can synthesize dozens of
+  tabs, and eager-starting a `compositor serve` for each at launch is never wanted. A discovered
+  tab's server starts on select, like any cold tab.
+- **One choke point re-scans.** `reload::reconcile` scans every window's `resolved_roots()` on each
+  call, so launch, config hot-reload, and the rescan button all pick up roots through the same path;
+  a root-less window scans nothing and behaves exactly as before. Identity is the canonicalized-dir
+  label, so a **curated tab shadows a same-dir discovered project** (the discovered duplicate is
+  dropped) and a repo reachable via two roots lands once — the opposite of the `-n` suffixing two
+  hand-authored same-dir tabs get.
+- **`tree`/`tree_path` must be forwarded through `chrome.js`'s DTO map** (`tree: !!t.tree,
+  treePath: t.tree_path ?? []`) — a new DTO field is invisible to chrome-core until the mapping
+  forwards it, the same trap `detached` and the `tree`/`treePath` footgun elsewhere describe.
+  chrome-core renders the folder tree + `⟳` from `tree: true` rows and fires `onRescan`.
+- **The `⟳` button is chrome-core's, not a menu item — there is no ⌘R.** `onRescan` invokes the
+  `rescan_root` command, which re-reads the config and re-runs `reconcile` (re-scanning disk) via
+  `apply_config`, then emits `config-reloaded` to refresh each window; a config that now fails to
+  parse keeps last-good and surfaces `config-error`, mirroring the file watcher.
+
 ## The `fnv1a_64` / `DefaultHasher` footgun
 
 `window_state_filename()` (keys `tauri-plugin-window-state`'s persisted-bounds file to the

@@ -34,6 +34,9 @@ a placeholder icon.
   more `[[window]]` blocks, each containing loose `[[window.tab]]` entries and/or
   `[[window.group]]` sections of `[[window.group.tab]]`s. A lector tab points at a **`dir`** — a
   local doc repo path — rather than a URL.
+- **`[[window.root]]` discovers repos for you.** Point a root at a projects dir (`dir`, with an
+  optional scan `depth`) and every git repo under it becomes a doc tab, shown as a collapsible
+  folder tree with a `⟳` rescan button. Discovered tabs are lazy — their server starts on select.
 - **One tab, one live server.** Selecting a tab starts a
   [compositor](https://github.com/Lockyc/compositor) `serve` loop on an ephemeral loopback port
   and points the tab's webview at it; the tab's title bar tracks whether that server is live.

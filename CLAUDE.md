@@ -68,6 +68,13 @@ lector also consumes the render/serve engine:
   rows, resize-drag, density tokens), shared with warden and curator. A **build-dependency**:
   `src-tauri/build.rs` materializes its CSS/JS into `src/chrome-core.{css,js}` (git-ignored)
   before Tauri embeds `src/`. Pinned by rev in `src-tauri/Cargo.toml`.
+  **The sidebar chrome IS chrome-core — read [its CLAUDE.md](https://github.com/Lockyc/chrome-core/blob/main/CLAUDE.md)
+  before assuming a sidebar feature is app-specific or missing.** Its frontend source is
+  `assets/sidebar.{css,js}` (not `src/`), and it already provides shared **opt-in** capabilities
+  lector can enable via DTO fields rather than building — e.g. project-tree/root sections
+  (`tree`/`treePath` rows → a collapsible folder tree + `⟳` rescan button firing `onRescan`) and
+  the self-updater. lector's `src/chrome.js` is a thin controller mapping those callbacks/DTO
+  fields to its own commands.
 - **config-core** (`https://github.com/Lockyc/config-core`) — the TOML config engine (parse,
   validate, format, hot-reload diff) behind the shared house formatter. Pinned by rev in
   `crates/lector-config/Cargo.toml`, kept at the **same rev** as warden's and curator's own

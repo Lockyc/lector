@@ -25,7 +25,17 @@ use std::collections::HashSet;
 /// Returns the new tab views, already installed into `state` — callers that need to act on them
 /// further (launch's `open_on_launch` selection) don't need a second `views_for_window` round-trip.
 pub fn reconcile(state: &AppState, windows: &[WindowConfig]) -> Vec<TabView> {
-    let all_views: Vec<TabView> = windows.iter().flat_map(WindowConfig::tab_views).collect();
+    // Discovered projects from each window's `[[window.root]]`s are folded in here so BOTH callers —
+    // launch and hot-reload — pick up roots through the one choke point, and `retain`/eager-start below
+    // treat a discovered tab like any other. Scanning per reconcile is what makes `rescan_root` a plain
+    // re-call of this path.
+    let all_views: Vec<TabView> = windows
+        .iter()
+        .flat_map(|w| {
+            let discovered = lector_config::discover_projects(&w.resolved_roots());
+            w.tab_views_with_discovered(&discovered)
+        })
+        .collect();
     state.set_views(all_views.clone());
 
     let mut labels: HashSet<String> = all_views.iter().map(|v| v.label.clone()).collect();
@@ -124,6 +134,37 @@ mod tests {
             .0
             .windows
             .remove(0)
+    }
+
+    #[test]
+    fn reconcile_discovers_root_projects_as_tree_views() {
+        // A window with a root pointing at a base dir containing one git repo.
+        let base = scratch("root-scan");
+        // Turn the scratch repo into a git root discoverable under `base`.
+        std::fs::create_dir_all(base.join(".git")).unwrap();
+        let parent = base.parent().unwrap().to_path_buf();
+        let src = format!(
+            "[[window]]\ntitle = \"W\"\n[[window.root]]\nname = \"Dev\"\ndir = \"{}\"\ndepth = 2\n",
+            parent.display()
+        );
+        let win = lector_config::parse_and_validate(&src)
+            .unwrap()
+            .0
+            .windows
+            .remove(0);
+        let state = AppState::new();
+
+        let views = reconcile(&state, std::slice::from_ref(&win));
+
+        let discovered: Vec<_> = views.iter().filter(|v| v.tree).collect();
+        assert!(
+            discovered.iter().any(|v| v.group.as_deref() == Some("Dev")),
+            "the root's git repo must appear as a tree view under its section"
+        );
+        // Lazy: a discovered tab is never eager-started.
+        assert!(discovered.iter().all(|v| !state.servers.is_alive(&v.label)));
+        state.servers.shutdown_all();
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

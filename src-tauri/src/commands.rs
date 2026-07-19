@@ -75,6 +75,12 @@ pub struct TabPayload {
     /// (`raise_popped_window`) rather than selecting it. Invisible to the component until
     /// `chrome.js`'s DTO mapping forwards it.
     pub detached: bool,
+    /// A project-tree (root)-discovered row. chrome-core renders a run of these under one section as
+    /// a collapsible folder tree with a `⟳` rescan button. `false` for curated tabs. Invisible to
+    /// the component until `chrome.js` forwards it (the same trap as `detached`).
+    pub tree: bool,
+    /// Folder segments between the root dir and this project — chrome-core nests by these.
+    pub tree_path: Vec<String>,
 }
 
 /// Project the resolved tabs + the live registry into rows for the chrome. `views` must already be
@@ -97,6 +103,8 @@ pub fn tab_dtos(
             loaded: servers.is_alive(&v.label),
             active: active == Some(v.label.as_str()),
             detached: detached.contains(&v.label),
+            tree: v.tree,
+            tree_path: v.tree_path.clone(),
         })
         .collect()
 }
@@ -727,6 +735,8 @@ mod tests {
             title: "X".into(),
             dir: dir.display().to_string(),
             load_on_open: true, // config says eager…
+            tree: false,
+            tree_path: Vec::new(),
         }];
 
         // …but nothing has started it, so it is cold.
@@ -752,6 +762,8 @@ mod tests {
                 title: "A".into(),
                 dir: "/tmp".into(),
                 load_on_open: false,
+                tree: false,
+                tree_path: Vec::new(),
             },
             lector_config::TabView {
                 label: "t2".into(),
@@ -759,6 +771,8 @@ mod tests {
                 title: "B".into(),
                 dir: "/usr".into(),
                 load_on_open: false,
+                tree: false,
+                tree_path: Vec::new(),
             },
         ];
         let servers = crate::servers::Servers::new();
@@ -779,6 +793,8 @@ mod tests {
                 title: "A".into(),
                 dir: "/tmp".into(),
                 load_on_open: false,
+                tree: false,
+                tree_path: Vec::new(),
             },
             lector_config::TabView {
                 label: "t2".into(),
@@ -786,6 +802,8 @@ mod tests {
                 title: "B".into(),
                 dir: "/usr".into(),
                 load_on_open: false,
+                tree: false,
+                tree_path: Vec::new(),
             },
         ];
         let servers = crate::servers::Servers::new();
@@ -793,6 +811,24 @@ mod tests {
         let dtos = tab_dtos(&views, &servers, None, &detached);
         assert!(!dtos[0].detached, "t1 was not popped out");
         assert!(dtos[1].detached, "t2 was popped out");
+    }
+
+    #[test]
+    fn tab_dtos_forward_tree_fields() {
+        let views = vec![lector_config::TabView {
+            label: "tab-1".into(),
+            group: Some("Dev".into()),
+            title: "proj".into(),
+            dir: "/tmp/proj".into(),
+            load_on_open: false,
+            tree: true,
+            tree_path: vec!["gh".into()],
+        }];
+        let servers = Servers::new();
+        let dtos = tab_dtos(&views, &servers, None, &HashSet::new());
+        assert!(dtos[0].tree);
+        assert_eq!(dtos[0].tree_path, vec!["gh".to_string()]);
+        servers.shutdown_all();
     }
 
     #[test]
@@ -807,6 +843,8 @@ mod tests {
             loaded: true,
             active: false,
             detached: true,
+            tree: false,
+            tree_path: Vec::new(),
         };
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(json["detached"], serde_json::json!(true));
@@ -865,6 +903,8 @@ mod tests {
                 title: "Loose".into(),
                 dir: "/tmp".into(),
                 load_on_open: false,
+                tree: false,
+                tree_path: Vec::new(),
             },
             lector_config::TabView {
                 label: "w1:tab-b".into(),
@@ -872,6 +912,8 @@ mod tests {
                 title: "Grouped".into(),
                 dir: "/usr".into(),
                 load_on_open: false,
+                tree: false,
+                tree_path: Vec::new(),
             },
             lector_config::TabView {
                 label: "w2:tab-c".into(),
@@ -879,6 +921,8 @@ mod tests {
                 title: "OtherWindow".into(),
                 dir: "/opt".into(),
                 load_on_open: false,
+                tree: false,
+                tree_path: Vec::new(),
             },
         ];
         state.set_views(views);
@@ -904,6 +948,8 @@ mod tests {
             title: "A".into(),
             dir: "/tmp".into(),
             load_on_open: false,
+            tree: false,
+            tree_path: Vec::new(),
         }];
         state.set_views(views);
         state.set_active("w1:tab-a");
@@ -958,6 +1004,8 @@ mod tests {
             title: label.into(),
             dir: "/tmp".into(),
             load_on_open: false,
+            tree: false,
+            tree_path: Vec::new(),
         }
     }
 

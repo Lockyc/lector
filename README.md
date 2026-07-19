@@ -21,12 +21,40 @@ lector curates local documentation the same way.
 
 ## Status
 
-**Complete and functional end-to-end, not yet released.** The full app works: the config
+**Complete and functional end-to-end, and released.** The full app works: the config
 parser/validator/formatter, the `Servers` supervisor (one live `compositor serve` per open tab),
-the sidebar chrome and its commands, content-webview link escape, config hot-reload, and the
-`validate`/`fmt` CLI are all built and tested. The in-app minisign-signed updater is fully
-wired. One thing is deliberately deferred to the release task: `src-tauri/icons/` still holds
-a placeholder icon.
+project-tree root discovery, tab pop-out into detached windows, the sidebar chrome and its
+commands, content-webview link escape, config hot-reload, and the `validate`/`fmt` CLI are all
+built and tested. The in-app minisign-signed updater is fully wired.
+
+## Install
+
+In **Claude Code**, run `/lector:install` — it checks prerequisites (offering to install
+any that are missing), builds lector from source into `~/.lector`, installs `lector.app`
+to `/Applications`, and seeds your config.
+
+Or install from a terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Lockyc/lector/main/install.sh | bash
+```
+
+Re-running either path updates lector (`git pull` + rebuild). The sections below describe the
+manual / contributor flow.
+
+## Updates
+
+lector updates itself — no reinstall. On launch, periodically while open, and via
+**lector ▸ Check for Updates…**, it checks GitHub for a newer release; when one exists the
+sidebar shows an *Update available* bar with a one-click **Update & Relaunch**.
+
+- **Confirm-to-install** — nothing installs silently; you approve each update.
+- **Signed** — each update is verified against lector's own minisign key before it installs,
+  independent of Apple notarization.
+- **Opt out** with `auto_update = false` (the **Check for Updates…** menu item still works).
+
+Re-running `install.sh` is only needed to bootstrap the first updater-capable version, or to
+build from source.
 
 ## Model
 

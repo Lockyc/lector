@@ -12,3 +12,12 @@ density   = "compact"
     title        = "lector"
     dir          = "."
     load_on_open = true
+
+    # A project-tree root: every git repo under `dir` (to `depth`) becomes a doc tab, rendered as a
+    # collapsible folder tree with a ⟳ rescan button. Discovered tabs are always lazy (server starts
+    # on select). `name` defaults to the dir's basename. Kept commented so this example still
+    # validates on any machine without depending on `~/Developer` existing.
+    # [[window.root]]
+    # name = "Developer"
+    # dir = "~/Developer"
+    # depth = 4

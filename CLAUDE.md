@@ -112,12 +112,13 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
   submenu holds only the spine's own `Close Tab` (⌘W) and `Pop Out Tab` (⌘⇧O) items — both defined
   by the spine, just spliced into lector's Tab submenu rather than the spine's own. curator's Tab
   submenu has Reload Tab / Reset All Tabs / Open Developer Tools; warden's has digit-mode jumps and
-  Reopen Last Closed — lector needs none of that. **compositor's file watcher already live-reloads
-  every open tab on save**, so a manual "Reload Tab" item would be a no-op button; there is no
-  per-tab "session" to reset (a compositor `SiteServer` has no state beyond the served files); and
-  DevTools is one keystroke away regardless. The Tab submenu exists purely to hold ⌘W and ⌘⇧O (the
-  family's Close Tab standard, plus the pop-out feature — see *Tab pop-out* below), not because
-  lector has anything else of its own to put there.
+  Reopen Last Closed — none of *those* map onto lector: **compositor's file watcher already
+  live-reloads every open tab on save**, so a manual "Reload Tab" item would be a no-op button;
+  there is no per-tab "session" to reset (a compositor `SiteServer` has no state beyond the served
+  files); and DevTools is one keystroke away regardless. So today the Tab submenu holds only ⌘W and
+  ⌘⇧O (the family's Close Tab standard, plus the pop-out feature — see *Tab pop-out* below). Other
+  tab-scoped actions (reveal-in-Finder, copy the served URL, open the repo dir) are open roadmap,
+  not excluded — the submenu is just empty of them for now.
 - **The home surface** (`shell_core::home::HOME_LABEL`, `skip_labels` in `register_plugins`) is
   what a fresh install shows: before this, lector built zero windows and no menu when
   `~/.config/lector/config.toml` didn't exist, so it launched to a live, invisible, unrecoverable
@@ -193,8 +194,9 @@ a toolchain problem. curator shipped this bug (fixed 2026-07-16); lector must no
 **lector's single copy of the fix lives in `crates/lector-config/src/hash.rs`** — a small
 `fnv1a_64`, pinned by a known-vectors test. shell-core deliberately does **not** own this hash
 (see shell-core's own CLAUDE.md dividing line): each consumer hashes its own config path, so the
-~8-line duplication is the accepted cost of that boundary. Do not reintroduce `DefaultHasher`,
-and do not move this hash into a shared crate to "deduplicate" it.
+~8-line duplication is the accepted cost of that boundary. Do not reintroduce `DefaultHasher` —
+its output's cross-release instability is the real constraint here; the hash's *location* is not,
+so sharing it later is fine if the shell-core boundary ever changes.
 
 ## The capabilities-file footgun: `has_app_manifest()` bypass does not cover core plugins
 

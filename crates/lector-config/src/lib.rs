@@ -106,6 +106,8 @@ pub struct WindowConfig {
     pub tabs: Vec<Tab>,
     #[serde(default, rename = "group")]
     pub groups: Vec<Group>,
+    #[serde(default, rename = "root")]
+    pub roots: Vec<RawRoot>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -114,6 +116,17 @@ pub struct Group {
     pub name: String,
     #[serde(default, rename = "tab")]
     pub tabs: Vec<Tab>,
+}
+
+/// A project-tree root: scan `dir` (to `depth`) for git repos, each rendered as a discovered doc
+/// tab. lector's leaf is empty — `shell`/`cmd`/`probe`/`kill` are warden-only and rejected by
+/// `deny_unknown_fields`. `name` defaults to `basename(dir)`; `depth` to config-core's default.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RawRoot {
+    pub name: Option<String>,
+    pub dir: String,
+    pub depth: Option<u32>,
 }
 
 /// One doc repo. The leaf is where the sibling apps diverge — curator: `url`/`session`;
@@ -159,6 +172,10 @@ pub enum ConfigError {
     DuplicateGroupName { window: String, name: String },
     InvalidWindowSize { width: u32, height: u32 },
     InvalidColour { title: String, colour: String },
+    EmptyRootDir { window: String },
+    EmptyRootName { window: String },
+    InvalidRootDepth { window: String, depth: u32 },
+    DuplicateSection { window: String, name: String },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -179,6 +196,18 @@ impl std::fmt::Display for ConfigError {
             }
             ConfigError::InvalidColour { title, colour } => {
                 write!(f, "window \"{title}\" has invalid colour: {colour}")
+            }
+            ConfigError::EmptyRootDir { window } => {
+                write!(f, "window {window:?} has a root with an empty dir")
+            }
+            ConfigError::EmptyRootName { window } => {
+                write!(f, "window {window:?} has a root with an empty name")
+            }
+            ConfigError::InvalidRootDepth { window, depth } => {
+                write!(f, "window {window:?} has a root with invalid depth {depth}")
+            }
+            ConfigError::DuplicateSection { window, name } => {
+                write!(f, "window {window:?} has duplicate section name: {name:?}")
             }
         }
     }
@@ -282,6 +311,33 @@ pub fn parse_and_validate(src: &str) -> Result<(Config, Vec<Warning>), ConfigErr
             }
             for tab in &group.tabs {
                 check_tab(tab)?;
+            }
+        }
+        for raw in &w.roots {
+            let rd = config_core::resolve_root_dir(raw.name.as_deref(), &raw.dir, raw.depth)
+                .map_err(|e| match e {
+                    config_core::RootError::EmptyDir => ConfigError::EmptyRootDir {
+                        window: w.title.clone(),
+                    },
+                    config_core::RootError::EmptyName => ConfigError::EmptyRootName {
+                        window: w.title.clone(),
+                    },
+                    config_core::RootError::ZeroDepth(d) => ConfigError::InvalidRootDepth {
+                        window: w.title.clone(),
+                        depth: d,
+                    },
+                })?;
+            if !group_names.insert(rd.name.clone()) {
+                return Err(ConfigError::DuplicateSection {
+                    window: w.title.clone(),
+                    name: rd.name,
+                });
+            }
+            if !rd.dir.is_dir() {
+                warnings.push(Warning {
+                    window: w.title.clone(),
+                    message: format!("root dir missing or not a directory: {}", rd.dir.display()),
+                });
             }
         }
     }
@@ -392,6 +448,16 @@ impl WindowConfig {
             });
         }
         views
+    }
+
+    /// This window's roots, validated + resolved to config-core `RootDir`s. Infallible here because
+    /// `parse_and_validate` already rejected any invalid root; a stray invalid one is silently
+    /// skipped rather than panicking a live reconcile.
+    pub fn resolved_roots(&self) -> Vec<config_core::RootDir> {
+        self.roots
+            .iter()
+            .filter_map(|r| config_core::resolve_root_dir(r.name.as_deref(), &r.dir, r.depth).ok())
+            .collect()
     }
 
     /// Label of the tab to make active on launch. Default (`false`/unset): the first `load_on_open`
@@ -844,6 +910,71 @@ title = "Docs"
         std::env::set_var("LECTOR_CONFIG", "");
         assert_eq!(resolve_config_path(), default_config_path());
         std::env::remove_var("LECTOR_CONFIG");
+    }
+
+    #[test]
+    fn parses_window_roots() {
+        let src = r#"
+[[window]]
+title = "W"
+[[window.root]]
+name = "Dev"
+dir = "~/Developer"
+depth = 3
+[[window.root]]
+dir = "~/work"
+"#;
+        let (cfg, _w) = parse_and_validate(src).unwrap();
+        let roots = cfg.windows[0].resolved_roots();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].name, "Dev");
+        assert_eq!(roots[0].depth, 3);
+        assert_eq!(roots[1].name, "work"); // basename default
+        assert_eq!(roots[1].depth, config_core::DEFAULT_ROOT_DEPTH);
+    }
+
+    #[test]
+    fn root_with_empty_dir_errors() {
+        let src = "[[window]]\ntitle = \"W\"\n[[window.root]]\ndir = \"  \"\n";
+        assert!(matches!(
+            parse_and_validate(src).unwrap_err(),
+            ConfigError::EmptyRootDir { .. }
+        ));
+    }
+
+    #[test]
+    fn root_name_colliding_with_group_errors() {
+        let src = r#"
+[[window]]
+title = "W"
+[[window.group]]
+name = "tools"
+[[window.root]]
+name = "tools"
+dir = "/tmp"
+"#;
+        assert!(matches!(
+            parse_and_validate(src).unwrap_err(),
+            ConfigError::DuplicateSection { .. }
+        ));
+    }
+
+    #[test]
+    fn root_rejects_warden_only_leaf_keys() {
+        // deny_unknown_fields on RawRoot: shell/cmd/probe/kill belong to warden, not lector.
+        for bad in [
+            "shell = \"fish\"",
+            "cmd = \"x\"",
+            "probe = \"p\"",
+            "kill = \"k\"",
+        ] {
+            let src =
+                format!("[[window]]\ntitle = \"W\"\n[[window.root]]\ndir = \"/tmp\"\n{bad}\n");
+            assert!(
+                matches!(parse_and_validate(&src).unwrap_err(), ConfigError::Parse(_)),
+                "must reject {bad}"
+            );
+        }
     }
 
     #[test]

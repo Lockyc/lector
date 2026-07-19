@@ -5,6 +5,9 @@ status  = "active"
 tags    = ["docs", "tauri", "macos", "markdown", "live-reload"]
 stack   = ["rust", "tauri", "javascript"]
 
+[github]
+topics_extra = ["documentation"]
+
 [[provides]]
 name    = "local-doc-console"
 summary = "Renders doc repos straight off the working tree — one compositor serve loop per live tab on an ephemeral loopback port, watching for edits. What curator structurally cannot do: no deploy, nothing published."

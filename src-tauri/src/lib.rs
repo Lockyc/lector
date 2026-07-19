@@ -500,6 +500,7 @@ pub fn run() {
         commands::pop_out_tab,
         commands::raise_popped_window,
         commands::pop_in_tab,
+        commands::rescan_root,
         commands::shell_home_create_config,
         commands::shell_home_edit_config,
         commands::shell_home_open_window,

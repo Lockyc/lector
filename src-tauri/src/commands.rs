@@ -715,6 +715,50 @@ pub fn shell_home_open_window(id: String, app: tauri::AppHandle) {
     crate::open_or_focus_window(&app, &id);
 }
 
+/// Re-scan every window's `[[window.root]]`s (and re-read the config) and reconcile — the chrome's
+/// `⟳` rescan button (chrome-core `onRescan`). Projects added/removed on disk appear/vanish without
+/// a config edit. Reuses the whole hot-reload path: `crate::apply_config` re-scans roots (via
+/// `reload::reconcile`, which calls `discover_projects` on every window's `resolved_roots()` on
+/// each invocation — see that function's doc) and reinstalls the global chrome settings, then a
+/// `config-reloaded` emit drives each window's `refresh()`. On a config that now fails to parse,
+/// keeps last-good and surfaces `config-error`, exactly like the config file watcher in `lib.rs`'s
+/// `run()`.
+#[tauri::command]
+pub fn rescan_root(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    use tauri::Emitter;
+    let path = lector_config::resolve_config_path();
+    match lector_config::load_config(&path) {
+        Ok((cfg, warnings)) => {
+            crate::apply_config(&app, &cfg, &warnings);
+            for m in state.window_meta() {
+                let _ = app.emit_to(m.id.as_str(), "config-reloaded", ());
+            }
+            let entries = crate::reload::window_entries(&app, &state.window_meta());
+            crate::reload::reconcile_home(
+                &app,
+                &entries,
+                &path.to_string_lossy(),
+                path.exists(),
+                None,
+            );
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            for m in state.window_meta() {
+                let _ = app.emit_to(m.id.as_str(), "config-error", msg.clone());
+            }
+            let entries = crate::reload::window_entries(&app, &state.window_meta());
+            crate::reload::reconcile_home(
+                &app,
+                &entries,
+                &path.to_string_lossy(),
+                path.exists(),
+                Some(&msg),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

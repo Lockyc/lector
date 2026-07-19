@@ -63,7 +63,15 @@ lector also consumes the render/serve engine:
 - **compositor** (`https://github.com/Lockyc/compositor`) — the Markdown render/serve engine.
   lector's `SiteServer` calls its `serve_handle()` once per open tab: a non-blocking call that
   runs a doc repo's live-reloading site on a loopback port and returns once bound. Pinned by rev
-  in `src-tauri/Cargo.toml`.
+  in `src-tauri/Cargo.toml`. **Keep this pin current** — re-pin it forward (`just compositor-pin`)
+  as compositor advances rather than letting it drift behind. lector is compositor's *only*
+  consumer, so a stale pin silently splits the source lector develops against from the source it
+  ships; and because lector's build is the drift detector for compositor's source under lector's
+  channel (see *Toolchain lockstep*), a long-idle pin *banks* that risk instead of surfacing it —
+  the divergence lands all at once, loudly, only when the pin finally moves. Keeping it current
+  keeps the detector live and the split from opening. A lagging pin is resolvable (the pinned rev
+  is pushed) so it never breaks another clone or CI — but "resolvable" is not "current," and
+  current is the standard here.
 - **chrome-core** (`https://github.com/Lockyc/chrome-core`) — the sidebar chrome (grouped tab
   rows, resize-drag, density tokens), shared with warden and curator. A **build-dependency**:
   `src-tauri/build.rs` materializes its CSS/JS into `src/chrome-core.{css,js}` (git-ignored)
@@ -306,9 +314,9 @@ build. The tracked `scripts/tooling.env` is the only per-app input they read.
 
 Conscious deferrals are tracked in [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md) — the outstanding
 first-release prerequisites (`main` doesn't exist yet; the updater endpoint 404s until a
-release lands), the installer trio deferred to land *with* that release, the GitHub repo
-surface, and why a lagging compositor pin is a decision rather than a defect. **Consult it
-before "fixing" a gap you've just noticed** — it may be a recorded deferral with a reason.
+release lands), the installer trio deferred to land *with* that release, and the GitHub repo
+surface. **Consult it before "fixing" a gap you've just noticed** — it may be a recorded
+deferral with a reason.
 
 ## The public repo
 

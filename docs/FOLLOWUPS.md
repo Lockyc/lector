@@ -1,6 +1,6 @@
 ---
 type: reference
-description: Conscious, intentionally-deferred follow-ups for lector (first-release prerequisites, installer, repo surface, compositor pin).
+description: Conscious, intentionally-deferred follow-ups for lector (first-release prerequisites, installer, repo surface).
 links:
   - rel: part-of
     to: CLAUDE.md
@@ -54,24 +54,3 @@ The repo is public with a good description, but carries **no topics**, and has *
 Projects enabled** — all three diverge from the house `github-repo-standards` baseline that
 warden/curator/compositor follow. Deferred only because it's an outward-facing `gh repo edit`
 that wants a human to authorise it, not because there's anything to decide.
-
-## The compositor pin sits behind, and that is fine — but the drift detector goes stale with it
-
-lector is compositor's **only** consumer and pins it by rev in `src-tauri/Cargo.toml`.
-compositor pins its own `rust-toolchain.toml` a channel *ahead* of the constellation's, and
-lector compiles compositor's **source** with lector's own pin (rustup resolves from the
-directory `cargo` runs in, never from `~/.cargo/git/checkouts/`) — so **lector's build is the
-designated drift detector** for compositor's source against the constellation channel. See
-CLAUDE.md › *Toolchain lockstep*; do not "fix" the channel divergence by matching compositor's.
-
-The consequence that is easy to miss: **while the pin sits still, the detector is not
-detecting.** Every compositor commit made since the pinned rev is source that has never been
-compiled under lector's channel, so the drift it exists to catch is *deferred, not absent* —
-it surfaces all at once, loudly and locally, at the next `just compositor-pin`. That is the
-designed failure mode and it is a good one, but it means a long-idle pin quietly accumulates
-the very risk the arrangement was set up to surface early.
-
-**Pinning forward is a decision, not a fix** — a lagging pin is not a defect as long as the
-pinned rev is pushed and resolvable (it is; that's the invariant that actually matters for
-every other clone and CI). Worth doing deliberately before cutting the first release, so v0.1.0
-doesn't ship an engine that far behind the one it's developed against.

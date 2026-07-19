@@ -1,5 +1,5 @@
 name    = "lector"
-summary = "A macOS console of grouped tabs over locally-rendered compositor doc sites — one tab per doc repo on disk, live-reloading with nothing deployed"
+summary = "Curated rendered docs — a macOS console of grouped tabs, each a local Markdown repo rendered live and reloading as you edit."
 kind    = "app"
 status  = "active"
 tags    = ["docs", "tauri", "macos", "markdown", "live-reload"]

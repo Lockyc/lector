@@ -394,6 +394,12 @@ pub struct TabView {
     pub title: String,
     pub dir: String,
     pub load_on_open: bool,
+    /// A project-tree (root)-discovered row: chrome renders these as a collapsible folder tree.
+    /// `false` for every curated tab. Serialized so the DTO can forward it.
+    pub tree: bool,
+    /// Folder segments between the root dir and this project (empty for curated tabs) — chrome-core
+    /// nests the tree by these.
+    pub tree_path: Vec<String>,
 }
 
 /// Stable within-window tab label derived from a tab's **canonicalized** dir — the spec's identity
@@ -445,6 +451,47 @@ impl WindowConfig {
                 title: tab.title.clone(),
                 dir: tab.dir.clone(),
                 load_on_open: tab.load_on_open,
+                tree: false,
+                tree_path: Vec::new(),
+            });
+        }
+        views
+    }
+
+    /// Curated tab views, then this window's discovered projects as `tree: true` views. A
+    /// discovered project whose label (canonicalized-dir identity) already appears is dropped — a
+    /// curated tab at the same repo shadows it, and a repo reachable via two roots lands once
+    /// (first wins).
+    pub fn tab_views_with_discovered(
+        &self,
+        discovered: &[config_core::DiscoveredProject],
+    ) -> Vec<TabView> {
+        let wid = crate::identity::window_id(&self.title);
+        let mut views = self.tab_views();
+        let mut seen: std::collections::HashSet<String> =
+            views.iter().map(|v| v.label.clone()).collect();
+        for proj in discovered {
+            let base = dir_label(&proj.path.to_string_lossy());
+            // Compare namespaced labels, matching how `seen` was seeded from curated views (whose
+            // labels already carry the `wid:` prefix) — comparing bare `base` against those would
+            // never collide and defeat the dedup entirely.
+            let label = crate::identity::namespaced(&wid, &base);
+            if !seen.insert(label.clone()) {
+                continue; // shadowed by a curated tab or an earlier root
+            }
+            let title = proj
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| proj.path.to_string_lossy().into_owned());
+            views.push(TabView {
+                label,
+                group: Some(proj.section.clone()),
+                title,
+                dir: proj.path.to_string_lossy().into_owned(),
+                load_on_open: false,
+                tree: true,
+                tree_path: proj.tree_path.clone(),
             });
         }
         views
@@ -975,6 +1022,44 @@ dir = "/tmp"
                 "must reject {bad}"
             );
         }
+    }
+
+    #[test]
+    fn discovered_projects_become_tree_views_after_curated() {
+        let src = "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"loose\"\ndir = \"/tmp\"\n";
+        let w = parse_and_validate(src).unwrap().0.windows.remove(0);
+        let disc = vec![config_core::DiscoveredProject {
+            path: std::path::PathBuf::from("/tmp/gh/proj"),
+            tree_path: vec!["gh".into()],
+            section: "Dev".into(),
+        }];
+        let views = w.tab_views_with_discovered(&disc);
+        assert_eq!(views.len(), 2);
+        assert!(!views[0].tree); // curated
+        assert!(views[1].tree);
+        assert_eq!(views[1].tree_path, vec!["gh".to_string()]);
+        assert_eq!(views[1].group.as_deref(), Some("Dev"));
+        assert_eq!(views[1].title, "proj");
+        assert!(!views[1].load_on_open);
+    }
+
+    #[test]
+    fn a_curated_tab_shadows_a_same_dir_discovered_project() {
+        let src =
+            "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"curated\"\ndir = \"/tmp\"\n";
+        let w = parse_and_validate(src).unwrap().0.windows.remove(0);
+        let disc = vec![config_core::DiscoveredProject {
+            path: std::path::PathBuf::from("/tmp"), // same repo the curated tab names
+            tree_path: vec![],
+            section: "Dev".into(),
+        }];
+        let views = w.tab_views_with_discovered(&disc);
+        assert_eq!(
+            views.len(),
+            1,
+            "discovered duplicate of a curated tab must be dropped"
+        );
+        assert_eq!(views[0].title, "curated");
     }
 
     #[test]

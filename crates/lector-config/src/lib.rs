@@ -5,7 +5,7 @@
 //! `lector_config::{Colour, format_file, format_str}`.
 pub use config_core::{
     discover_projects, fmt_cli, format_file, format_str, write_default_config, Colour, ColourError,
-    DiscoveredProject, RootDir, SeedError,
+    Density, DiscoveredProject, Group, OpenOnLaunch, RootDir, SeedError, Warning,
 };
 
 pub mod hash;
@@ -13,33 +13,9 @@ pub mod identity;
 
 use serde::{Deserialize, Serialize};
 
-/// What to open when a window launches. The default (`false` / unset) opens the first
-/// `load_on_open` (loaded) tab, else the blank background — the first tab isn't always loaded, so
-/// it isn't forced. `true` opens the first tab even if it isn't loaded; a string opens the tab
-/// whose `title` matches (falling back to the first).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum OpenOnLaunch {
-    Toggle(bool),
-    Tab(String),
-}
-impl Default for OpenOnLaunch {
-    fn default() -> Self {
-        OpenOnLaunch::Toggle(false)
-    }
-}
-
-/// Chrome sizing mode (whole-app). `Comfortable` (default) is the standard sizing; `Compact`
-/// proportionally condenses the chrome's type + spacing for denser tab lists. The chrome maps
-/// this to a `data-density` attribute → CSS variables; it serializes to the lowercase token the
-/// chrome reads. An unrecognised value is a parse error (same as any bad enum here).
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Density {
-    #[default]
-    Comfortable,
-    Compact,
-}
+// `OpenOnLaunch`, `Density`, the `Group<Tab>` container, `Warning`, and the `default_*` serde
+// helpers are the leaf-free primitives shared with curator (and, for Density/Warning, warden) —
+// they live in config-core and are re-exported above. lector layers its own leaf `Tab` on top.
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -60,12 +36,12 @@ pub struct Config {
     pub density: Density,
     /// Whether the sidebar chrome acts as a window-move drag handle (whole-app). Default true;
     /// `false` turns it off. The chrome maps this to the component's `windowDrag` flag.
-    #[serde(default = "default_true")]
+    #[serde(default = "config_core::default_true")]
     pub sidebar_drag: bool,
     /// Whether lector checks for a new release on launch (whole-app). Default true; `false`
     /// suppresses the automatic launch check. The manual **Check for Updates…** menu item stays
     /// available regardless. The chrome gates its launch check on this.
-    #[serde(default = "default_true")]
+    #[serde(default = "config_core::default_true")]
     pub auto_update: bool,
     #[serde(default, rename = "window")]
     pub windows: Vec<WindowConfig>,
@@ -92,9 +68,9 @@ impl Default for Config {
 #[serde(deny_unknown_fields)]
 pub struct WindowConfig {
     pub title: String,
-    #[serde(default = "default_window_width")]
+    #[serde(default = "config_core::default_window_width")]
     pub width: u32,
-    #[serde(default = "default_window_height")]
+    #[serde(default = "config_core::default_window_height")]
     pub height: u32,
     #[serde(default)]
     pub open_on_launch: OpenOnLaunch,
@@ -106,17 +82,9 @@ pub struct WindowConfig {
     #[serde(default, rename = "tab")]
     pub tabs: Vec<Tab>,
     #[serde(default, rename = "group")]
-    pub groups: Vec<Group>,
+    pub groups: Vec<Group<Tab>>,
     #[serde(default, rename = "root")]
     pub roots: Vec<RawRoot>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Group {
-    pub name: String,
-    #[serde(default, rename = "tab")]
-    pub tabs: Vec<Tab>,
 }
 
 /// A project-tree root: scan `dir` (to `depth`) for git repos, each rendered as a discovered doc
@@ -151,16 +119,6 @@ pub struct Tab {
 /// the shared `config_core` parser so all three apps validate accent colours identically.
 fn is_hex_colour(s: &str) -> bool {
     config_core::Colour::parse(s).is_ok()
-}
-
-fn default_true() -> bool {
-    true
-}
-fn default_window_width() -> u32 {
-    1500
-}
-fn default_window_height() -> u32 {
-    1000
 }
 
 #[derive(Debug)]
@@ -212,15 +170,6 @@ impl std::fmt::Display for ConfigError {
             }
         }
     }
-}
-
-/// A non-fatal config issue surfaced to the user (logged on load, printed by `lector validate`)
-/// without rejecting the config. Two producers: a `dir` repeated within a window, and a `dir` that
-/// is missing or is not a directory.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Warning {
-    pub window: String,
-    pub message: String,
 }
 
 /// Per-tab field validation shared by loose and grouped tabs: non-empty title + dir.

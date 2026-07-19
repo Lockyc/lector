@@ -102,6 +102,11 @@ async function buildDto() {
       // Popped out into its own window: chrome-core renders the ⤢ mark and routes a row click to
       // onSelect, which the controller maps to "raise the window". Invisible unless forwarded here.
       detached: !!t.detached,
+      // A [[window.root]]-discovered row: chrome-core renders a run of these under one section as a
+      // collapsible folder tree with a ⟳ rescan button. Invisible until forwarded here (same trap
+      // as `detached`, `treePath` is the between-root-and-project folder chain).
+      tree: !!t.tree,
+      treePath: t.tree_path ?? [],
       warn: false,
     })),
   };
@@ -187,6 +192,11 @@ async function mountChrome() {
       // whose Destroyed handler runs redock (re-showing the tab on the same running server/port).
       onPopIn(tabId) {
         invoke("pop_in_tab", { label: tabId }).catch((e) => sb.setError(String(e)));
+      },
+      onRescan() {
+        // chrome-core's ⟳ control on a [[window.root]] section header. The component passes the
+        // section (group) name; lector re-scans every root in the config, so it's ignored.
+        invoke("rescan_root").catch((e) => sb.setError(String(e)));
       },
       onResize(width) {
         // The chrome is the window's full-size main webview: the sidebar's visible width is CSS

@@ -381,85 +381,68 @@ pub fn run() {
         // parse/validate. A failed reload tears nothing down — see `reload::reconcile`'s doc
         // and `lector_config`'s "missing dir warns, never errors" rule this mirrors: an
         // un-cloned repo, or a config with one bad line, must not strand every other tab.
-        let watch_path = path.clone();
+        // The shared shell-core watcher owns the parent-dir watch, the file-name match (macOS
+        // FSEvents-robust — the fix for the old exact-path bug that silently missed every event
+        // under a symlinked config dir), and the echo-swallow (via the `Option<String>` the
+        // closure returns on a format write). lector supplies just the parse + apply.
         let app_handle = app.handle().clone();
-        std::thread::spawn(move || {
-            use notify::{RecursiveMode, Watcher};
-            let (tx, rx) = std::sync::mpsc::channel();
-            let Ok(mut watcher) = notify::recommended_watcher(tx) else {
-                return;
-            };
-            // Watch the parent dir, not the file: editors that atomic-save (write temp +
-            // rename) replace the inode, which silently breaks a single-file watch.
-            let dir = watch_path.parent().unwrap_or(&watch_path);
-            if Watcher::watch(&mut watcher, dir, RecursiveMode::NonRecursive).is_err() {
-                return;
-            }
-            // The exact bytes of our own most recent format-on-save write, so we can swallow
-            // the watch event it triggers and reload exactly once per user save.
-            let mut self_write: Option<String> = None;
-            for res in rx {
-                let Ok(event) = res else { continue };
-                if !event.paths.iter().any(|p| p == &watch_path) {
-                    continue;
-                }
-                let Ok(src) = std::fs::read_to_string(&watch_path) else {
-                    continue;
-                };
-                // Swallow the echo of our own format-on-save write — the user save that
-                // prompted it already reloaded. `take()` clears the marker either way, so at
-                // worst a missed echo costs one redundant no-op reload.
-                if self_write.take().as_deref() == Some(src.as_str()) {
-                    continue;
-                }
-                match lector_config::parse_and_validate(&src) {
-                    Ok((new_cfg, warnings)) => {
-                        // Format-on-save: rewrite in house style on a clean reload.
-                        // `format_file` is itself diff-guarded (a no-op on already-formatted
-                        // bytes); the pre-check here is what lets us capture the formatted
-                        // bytes as `self_write` so the watch event our own write triggers is
-                        // swallowed above — one reload per user save, not two.
-                        if new_cfg.format_on_save {
-                            let formatted = lector_config::format_str(&src);
-                            if formatted != src {
-                                match lector_config::format_file(&watch_path) {
-                                    Ok(_) => self_write = Some(formatted),
-                                    Err(e) => eprintln!("config format error: {e}"),
+        let fmt_path = path.clone();
+        shell_core::watch::watch_config(path.clone(), move |src| {
+            match lector_config::parse_and_validate(src) {
+                Ok((new_cfg, warnings)) => {
+                    // Format-on-save: rewrite in house style on a clean reload. `format_file` is
+                    // diff-guarded (a no-op on already-formatted bytes); when it rewrites, return
+                    // the formatted bytes so the watcher swallows the echo — one reload per user
+                    // save, not two.
+                    let self_write = if new_cfg.format_on_save {
+                        let formatted = lector_config::format_str(src);
+                        if formatted != src {
+                            match lector_config::format_file(&fmt_path) {
+                                Ok(_) => Some(formatted),
+                                Err(e) => {
+                                    eprintln!("config format error: {e}");
+                                    None
                                 }
                             }
+                        } else {
+                            None
                         }
-                        apply_config(&app_handle, &new_cfg, &warnings);
-                        for wid in &window_ids {
-                            let _ = app_handle.emit_to(wid.as_str(), "config-reloaded", ());
-                        }
-                        let state = app_handle.state::<commands::AppState>();
-                        let entries = reload::window_entries(&app_handle, &state.window_meta());
-                        reload::reconcile_home(
-                            &app_handle,
-                            &entries,
-                            &watch_path.to_string_lossy(),
-                            true,
-                            None,
-                        );
+                    } else {
+                        None
+                    };
+                    apply_config(&app_handle, &new_cfg, &warnings);
+                    for wid in &window_ids {
+                        let _ = app_handle.emit_to(wid.as_str(), "config-reloaded", ());
                     }
-                    Err(e) => {
-                        // Last-good-on-failure: `apply_config` never ran, so state (and every
-                        // running server) is untouched — only the error is surfaced.
-                        let msg = e.to_string();
-                        eprintln!("config error: {msg}");
-                        for wid in &window_ids {
-                            let _ = app_handle.emit_to(wid.as_str(), "config-error", msg.clone());
-                        }
-                        let state = app_handle.state::<commands::AppState>();
-                        let entries = reload::window_entries(&app_handle, &state.window_meta());
-                        reload::reconcile_home(
-                            &app_handle,
-                            &entries,
-                            &watch_path.to_string_lossy(),
-                            true,
-                            Some(&msg),
-                        );
+                    let state = app_handle.state::<commands::AppState>();
+                    let entries = reload::window_entries(&app_handle, &state.window_meta());
+                    reload::reconcile_home(
+                        &app_handle,
+                        &entries,
+                        &fmt_path.to_string_lossy(),
+                        true,
+                        None,
+                    );
+                    self_write
+                }
+                Err(e) => {
+                    // Last-good-on-failure: `apply_config` never ran, so state (and every
+                    // running server) is untouched — only the error is surfaced.
+                    let msg = e.to_string();
+                    eprintln!("config error: {msg}");
+                    for wid in &window_ids {
+                        let _ = app_handle.emit_to(wid.as_str(), "config-error", msg.clone());
                     }
+                    let state = app_handle.state::<commands::AppState>();
+                    let entries = reload::window_entries(&app_handle, &state.window_meta());
+                    reload::reconcile_home(
+                        &app_handle,
+                        &entries,
+                        &fmt_path.to_string_lossy(),
+                        true,
+                        Some(&msg),
+                    );
+                    None
                 }
             }
         });

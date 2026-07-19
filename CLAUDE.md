@@ -29,9 +29,7 @@ selection, a config-file watcher (format-on-save, last-good-on-failure), and a c
 `RunEvent::Exit` handler that shuts down every server. The `validate`/`fmt` CLI subcommands round
 it out. The in-app updater is fully wired: it has its permission (see the capabilities footgun
 below) and `tauri.conf.json` carries the real minisign `pubkey`, whose private half lives only on
-the maintainer's machine and in their password manager — never in this repo. One placeholder
-remains, and it is cosmetic rather than behavioural: `src-tauri/icons/` holds a generic placeholder
-icon, not lector's real brand art.
+the maintainer's machine and in their password manager — never in this repo.
 
 The shape mirrors curator's: a Cargo workspace with a platform-neutral config crate
 (`crates/lector-config` — parse/validate/format/identity, no Tauri deps, unit-tested standalone)

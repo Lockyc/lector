@@ -350,11 +350,10 @@ build. The tracked `scripts/tooling.env` is the only per-app input they read.
 
 ## Deferred work
 
-Conscious deferrals are tracked in [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md) — the outstanding
-first-release prerequisites (`main` doesn't exist yet; the updater endpoint 404s until a
-release lands), the installer trio deferred to land *with* that release, and the GitHub repo
-surface. **Consult it before "fixing" a gap you've just noticed** — it may be a recorded
-deferral with a reason.
+Conscious deferrals are tracked in [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md) — currently the
+per-tab Tab-submenu actions (reveal-in-Finder, copy served URL, open repo dir) that nothing yet
+needs. **Consult it before "fixing" a gap you've just noticed** — it may be a recorded deferral
+with a reason.
 
 ## The public repo
 

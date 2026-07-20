@@ -138,9 +138,8 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
         wv.navigate(url).map_err(|e| e.to_string())?;
     } else {
         let hole = hole_for(window.label());
-        let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
-            .initialization_script(shell_core::MOUSE_NAV_JS)
-            .on_navigation(move |target| {
+        let builder =
+            WebviewBuilder::new(label, WebviewUrl::External(url)).on_navigation(move |target| {
                 if is_own_origin(target.as_str(), port) {
                     true
                 } else {

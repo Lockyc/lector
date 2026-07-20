@@ -284,6 +284,18 @@ pub fn run() {
 
         apply_config(app.handle(), &cfg, &warnings);
 
+        // Native mouse side-button (back/forward) navigation — the shared shell-core NSEvent monitor
+        // (WKWebView never delivers the side buttons to the DOM). lector supplies the
+        // focused-active-webview resolver; shell-core owns the monitor + native goBack/goForward.
+        let mouse_nav_handle = app.handle().clone();
+        shell_core::mouse_nav::install(move || {
+            let win = mouse_nav_handle.get_focused_window()?;
+            let label = mouse_nav_handle
+                .state::<commands::AppState>()
+                .active_for(win.label())?;
+            win.get_webview(&label)
+        });
+
         // Launch selection (`WindowConfig::startup_label` — the first load_on_open tab by default,
         // or whatever `open_on_launch` overrides to): select it exactly the way a click would
         // (`commands::select` — start-if-cold, show, mark active), never a shadow copy of that

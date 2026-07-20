@@ -23,9 +23,10 @@ manifest pinning all four cores, `build.rs`, `tauri.conf.json`, the
 start/stop/retain/shutdown_all, dead-thread detection via `reap`/`is_alive`), the chrome controller
 (`src/chrome.js` + the commands it calls in `commands.rs`), content-webview management with link
 escape (`webviews.rs` — `is_own_origin` keeps a doc's off-site links from stranding the tab, and
-another tab's own loopback port is escaped too; every content webview also injects shell-core's
-shared `MOUSE_NAV_JS`, mapping the mouse side-buttons to history back/forward — lector's sole
-content-injection), and `run()`'s full setup: config load, window
+another tab's own loopback port is escaped too), native mouse side-button back/forward (shell-core's
+shared `mouse_nav::install` NSEvent monitor, wired in the setup hook with lector's
+focused-active-webview resolver — WKWebView never delivers the side buttons to the DOM, so it can't
+be done in the page; see shell-core's CLAUDE.md), and `run()`'s full setup: config load, window
 build, the shared launch/hot-reload reconciliation path (`reload.rs`), `open_on_launch` startup
 selection, a config-file watcher (format-on-save, last-good-on-failure), and a clean-quit
 `RunEvent::Exit` handler that shuts down every server. The `validate`/`fmt` CLI subcommands round

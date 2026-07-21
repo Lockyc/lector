@@ -5,7 +5,7 @@
 //! `lector_config::{Colour, format_file, format_str}`.
 pub use config_core::{
     discover_projects, fmt_cli, format_file, format_str, write_default_config, Colour, ColourError,
-    Density, DiscoveredProject, Group, OpenOnLaunch, RootDir, SeedError, Warning,
+    Density, DiscoveredProject, Group, RootDir, SeedError, Warning,
 };
 
 pub mod hash;
@@ -13,9 +13,9 @@ pub mod identity;
 
 use serde::{Deserialize, Serialize};
 
-// `OpenOnLaunch`, `Density`, the `Group<Tab>` container, `Warning`, and the `default_*` serde
-// helpers are the leaf-free primitives shared with curator (and, for Density/Warning, warden) —
-// they live in config-core and are re-exported above. lector layers its own leaf `Tab` on top.
+// `Density`, the `Group<Tab>` container, `Warning`, and the `default_*` serde helpers are the
+// leaf-free primitives shared with curator (and, for Density/Warning, warden) — they live in
+// config-core and are re-exported above. lector layers its own leaf `Tab` on top.
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -72,8 +72,13 @@ pub struct WindowConfig {
     pub width: u32,
     #[serde(default = "config_core::default_window_height")]
     pub height: u32,
+    /// Which tab is active when this window launches. `false`/unset opens the first `load_on_open`
+    /// (loaded) tab, else the blank background — the first tab isn't always loaded, so it isn't
+    /// forced. `true` opens the first tab even if it isn't loaded. Titles are display labels, not
+    /// addresses, so there's no "open the tab named X" form (that would tie launch to a duplicable
+    /// title — the warden/family way is that title never selects a tab).
     #[serde(default)]
-    pub open_on_launch: OpenOnLaunch,
+    pub open_on_launch: bool,
     /// Optional per-window accent colour (`#rgb` or `#rrggbb`). The chrome shows it as a
     /// name banner + a faint tint, giving each window an at-a-glance identity. Omit → neutral.
     #[serde(default)]
@@ -127,7 +132,6 @@ pub enum ConfigError {
     Parse(toml::de::Error),
     EmptyField(&'static str),
     DuplicateWindowTitle(String),
-    DuplicateTabTitle { window: String, title: String },
     DuplicateGroupName { window: String, name: String },
     InvalidWindowSize { width: u32, height: u32 },
     InvalidColour { title: String, colour: String },
@@ -144,9 +148,6 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Parse(e) => write!(f, "invalid TOML: {e}"),
             ConfigError::EmptyField(field) => write!(f, "empty {field}"),
             ConfigError::DuplicateWindowTitle(t) => write!(f, "duplicate window title: {t}"),
-            ConfigError::DuplicateTabTitle { window, title } => {
-                write!(f, "window {window:?} has duplicate tab title: {title:?}")
-            }
             ConfigError::DuplicateGroupName { window, name } => {
                 write!(f, "window {window:?} has duplicate group name: {name:?}")
             }
@@ -210,24 +211,18 @@ pub fn parse_and_validate(src: &str) -> Result<(Config, Vec<Warning>), ConfigErr
                 });
             }
         }
-        // Uniqueness is window-wide for tab titles (across loose + grouped) and per-window for
-        // group names — both keep the labels and the menu/CLI unambiguous. A dir repeated within a
-        // window is non-fatal (the labels still disambiguate) but warned once. Per-window, not
-        // global: labels are namespaced `{window_id}:{dir_hash}`, so the same repo in two windows
-        // is no collision — and it's a supported pattern (one repo, two windows).
-        let mut tab_titles = std::collections::HashSet::new();
+        // Group names are unique per window. Tab *titles* are not checked — they're display
+        // labels, never an address (identity is the dir-hash label, namespaced per window), so
+        // duplicates are allowed (the warden/family way). A dir repeated within a window is
+        // non-fatal (the labels still disambiguate) but warned once. Per-window, not global:
+        // labels are namespaced `{window_id}:{dir_hash}`, so the same repo in two windows is no
+        // collision — and it's a supported pattern (one repo, two windows).
         let mut group_names = std::collections::HashSet::new();
         let mut seen_dirs = std::collections::HashSet::new();
         let mut warned_dirs = std::collections::HashSet::new();
         let window_title = w.title.clone();
         let mut check_tab = |tab: &Tab| -> Result<(), ConfigError> {
             validate_tab(tab)?;
-            if !tab_titles.insert(tab.title.trim().to_string()) {
-                return Err(ConfigError::DuplicateTabTitle {
-                    window: window_title.clone(),
-                    title: tab.title.clone(),
-                });
-            }
             if !seen_dirs.insert(tab.dir.clone()) && warned_dirs.insert(tab.dir.clone()) {
                 warnings.push(Warning {
                     window: window_title.clone(),
@@ -457,22 +452,18 @@ impl WindowConfig {
             .collect()
     }
 
-    /// Label of the tab to make active on launch. Default (`false`/unset): the first `load_on_open`
-    /// (loaded) tab, else `None` (blank) — the first tab isn't always loaded, so it isn't forced.
-    /// `true`: the first tab even if cold. A title string: the matching tab (else the first).
+    /// Label of the tab to make active on launch. `false`/unset: the first `load_on_open` (loaded)
+    /// tab, else `None` (blank) — the first tab isn't always loaded, so it isn't forced. `true`:
+    /// the first tab even if cold.
     pub fn startup_label(&self) -> Option<String> {
         let views = self.tab_views();
-        match &self.open_on_launch {
-            OpenOnLaunch::Toggle(false) => views
+        if self.open_on_launch {
+            views.first().map(|v| v.label.clone())
+        } else {
+            views
                 .iter()
                 .find(|v| v.load_on_open)
-                .map(|v| v.label.clone()),
-            OpenOnLaunch::Toggle(true) => views.first().map(|v| v.label.clone()),
-            OpenOnLaunch::Tab(title) => views
-                .iter()
-                .find(|v| v.title == *title)
-                .or_else(|| views.first())
-                .map(|v| v.label.clone()),
+                .map(|v| v.label.clone())
         }
     }
 }
@@ -575,8 +566,10 @@ load_on_open = true
     }
 
     #[test]
-    fn rejects_duplicate_tab_title_window_wide_across_loose_and_grouped() {
-        // Window-wide, not per-section: a loose tab and a grouped tab may not share a title.
+    fn duplicate_tab_title_window_wide_is_allowed() {
+        // Titles are display labels, not addresses (identity is the dir-hash label), so a loose
+        // tab and a grouped tab may share a title — the warden/family way. The two distinct dirs
+        // still yield distinct labels.
         let src = r#"
 [[window]]
 title = "W"
@@ -589,10 +582,14 @@ title = "W"
     title = "Dup"
     dir = "/usr"
 "#;
-        assert!(matches!(
-            parse_and_validate(src).unwrap_err(),
-            ConfigError::DuplicateTabTitle { .. }
-        ));
+        let (cfg, _warnings) = parse_and_validate(src).unwrap();
+        let labels: Vec<_> = cfg.windows[0]
+            .tab_views()
+            .into_iter()
+            .map(|v| v.label)
+            .collect();
+        assert_eq!(labels.len(), 2);
+        assert_ne!(labels[0], labels[1], "distinct dirs → distinct labels");
     }
 
     #[test]
@@ -850,19 +847,20 @@ title = "Docs"
         .unwrap()
         .0;
         assert_eq!(none.windows[0].startup_label(), None);
+    }
 
+    #[test]
+    fn open_on_launch_string_is_rejected() {
+        // `open_on_launch` is a plain bool now — titles are display labels, never an address, so
+        // the old `open_on_launch = "<title>"` form no longer parses (breaking change).
         let src = VALID.replace(
             "title = \"Docs\"",
             "title = \"Docs\"\nopen_on_launch = \"compositor\"",
         );
-        let named = parse_and_validate(&src).unwrap().0;
-        let want = named.windows[0]
-            .tab_views()
-            .into_iter()
-            .find(|v| v.title == "compositor")
-            .unwrap()
-            .label;
-        assert_eq!(named.windows[0].startup_label(), Some(want));
+        assert!(matches!(
+            parse_and_validate(&src),
+            Err(ConfigError::Parse(_))
+        ));
     }
 
     #[test]

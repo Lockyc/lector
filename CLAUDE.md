@@ -232,7 +232,13 @@ known-vectors test:
 
 - **Tab label identity** — `crates/lector-config/src/hash.rs::fnv1a_64` hashes a tab's canonicalized
   dir into its stable webview label. This copy stays in the config crate (label identity is its
-  domain); a drift here would remap every tab's webview.
+  domain); a drift here would remap every tab's webview. **A tab's *title* is a display label, never
+  an identity or address — duplicates are allowed.** `open_on_launch` is a plain `bool` (unset/`false`
+  = first `load_on_open` tab, `true` = first tab even if cold). **Footgun: don't reintroduce
+  title-as-address** — an `open_on_launch = "<title>"` arm (or any title-keyed lookup) silently
+  re-imposes title uniqueness and gives first-match on a duplicate. curator, lector, and warden share
+  this "title is display-only" rule, so a change is a family-wide decision (`OpenOnLaunch` lived in
+  config-core and was collapsed to a bool to enforce it everywhere).
 - **Window-state filename** — lifted to shell-core: `register_plugins` derives the persisted-bounds
   filename from the config path via `shell_core::state_filename` (shell-core's own
   test-vector-pinned `fnv1a_64`). lector no longer owns this hash; it just hands shell-core the path.

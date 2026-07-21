@@ -281,7 +281,7 @@ impl AppState {
             .insert(window_id.to_string(), colour);
     }
 
-    fn colour_for(&self, window_id: &str) -> Option<String> {
+    pub(crate) fn colour_for(&self, window_id: &str) -> Option<String> {
         self.colours
             .lock()
             .expect("colours lock")

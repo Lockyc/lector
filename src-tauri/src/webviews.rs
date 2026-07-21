@@ -129,6 +129,23 @@ fn open_in_system_browser(url: &str) {
 ///
 /// The webview's `on_navigation` is gated by [`is_own_origin`]: only this tab's own loopback origin
 /// navigates in place, everything else escapes to the system browser (see the module doc).
+/// The loading-bar colour as sRGB rgba (0–1) from a window's optional accent hex (`colour`), with a
+/// neutral-blue fallback when unset or unparseable — matching curator's bar.
+#[cfg(target_os = "macos")]
+fn accent_rgba(colour: Option<&str>) -> (f64, f64, f64, f64) {
+    colour
+        .and_then(|s| lector_config::Colour::parse(s).ok())
+        .map(|c| {
+            (
+                c.r as f64 / 255.0,
+                c.g as f64 / 255.0,
+                c.b as f64 / 255.0,
+                1.0,
+            )
+        })
+        .unwrap_or((0.039, 0.518, 1.0, 1.0))
+}
+
 fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
     let url: Url = format!("http://127.0.0.1:{port}/")
         .parse()
@@ -147,13 +164,24 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
                     false
                 }
             });
-        window
+        let wv = window
             .add_child(
                 builder,
                 LogicalPosition::new(hole.x, hole.y),
                 LogicalSize::new(hole.width.max(0.0), hole.height.max(0.0)),
             )
             .map_err(|e| e.to_string())?;
+        // Thin determinate loading bar at the top of this content webview (shell-core-owned),
+        // tinted with the window's accent (neutral fallback for a detached window's label).
+        #[cfg(target_os = "macos")]
+        {
+            use tauri::Manager;
+            let accent = window
+                .app_handle()
+                .state::<crate::commands::AppState>()
+                .colour_for(window.label());
+            shell_core::progress_bar::install(&wv, accent_rgba(accent.as_deref()));
+        }
     }
     raise_only(window, label)
 }

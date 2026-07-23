@@ -24,8 +24,9 @@ lector curates local documentation the same way.
 **Complete and functional end-to-end, and released.** The full app works: the config
 parser/validator/formatter, the `Servers` supervisor (one live `compositor serve` per open tab),
 project-tree root discovery, tab pop-out into detached windows, the sidebar chrome and its
-commands, content-webview link escape, config hot-reload, and the `validate`/`fmt` CLI are all
-built and tested. The in-app minisign-signed updater is fully wired.
+commands, content-webview link escape, native mouse side-button back/forward navigation, a
+determinate content-load progress bar, config hot-reload, and the `validate`/`fmt` CLI
+are all built and tested. The in-app minisign-signed updater is fully wired.
 
 ## Install
 
@@ -68,6 +69,9 @@ build from source.
 - **One tab, one live server.** Selecting a tab starts a
   [compositor](https://github.com/Lockyc/compositor) `serve` loop on an ephemeral loopback port
   and points the tab's webview at it; the tab's title bar tracks whether that server is live.
+- **Native navigation.** Mouse side-buttons drive back/forward through a tab's history via a
+  shared shell-core NSEvent monitor, and a determinate progress bar tracks content-webview
+  loading — both alongside the sidebar's ◀ ▶ ⌂ nav pill.
 - **Nothing deployed.** There is no build/publish step in the loop — the whole point is to
   render a doc repo's *working tree* as you edit it.
 

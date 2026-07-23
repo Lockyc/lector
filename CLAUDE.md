@@ -86,7 +86,9 @@ lector also consumes the render/serve engine:
   lector can enable via DTO fields rather than building — e.g. project-tree/root sections
   (`tree`/`treePath` rows → a collapsible folder tree + `⟳` rescan button firing `onRescan`) and
   the self-updater. lector's `src/chrome.js` is a thin controller mapping those callbacks/DTO
-  fields to its own commands.
+  fields to its own commands. **The forwarding premise (referenced throughout below): a new DTO
+  field is inert until `chrome.js`'s map copies it across — invisible to chrome-core otherwise.**
+  Each forwarded field is commented at its map site in `src/chrome.js`.
 - **config-core** (`https://github.com/Lockyc/config-core`) — the TOML config engine (parse,
   validate, format, hot-reload diff) behind the shared house formatter. Pinned by rev in
   `crates/lector-config/Cargo.toml`, kept at the **same rev** as warden's and curator's own
@@ -151,33 +153,22 @@ the origin first if the user closed it while the tab was out.
   loop and its file watcher run continuously across the whole hop, so the pop is near-lossless —
   live-reload-on-save keeps working throughout, and only in-page state a webview recreation can't
   carry (scroll position, in-page navigation) is lost.
-- **The crux footgun this shipped with: the server must survive the entire hop, and three
-  separate paths could have killed it.**
-  - `pop_out_tab` itself closes the origin's content webview but **never calls `Servers::stop`** —
-    only `webviews::close` (webview teardown), never `AppState::unload` (which would stop the
-    server).
-  - `unload_tab` **no-ops on a detached tab** (`state.detached_tab_labels().contains(&label)` guard,
-    checked first thing): chrome-core's live/unload dot stays fully interactive on a detached row
-    (only the ⤢ control itself is suppressed), so a stray hover-✕ or the ⌘W accelerator can still
-    reach `unload_tab` for a popped-out tab. Without the guard it would stop the server backing the
-    still-open detached window out from under it.
-  - `reload::reconcile`'s `Servers::retain(&labels)` **unions in `state.detached_tab_labels()`**
-    before retaining, so a hot-reload whose new config drops (or relabels, via a changed `dir`) a
-    popped-out tab does not stop that tab's server mid-session. The server-stop for a *genuinely*
-    removed tab is correctly deferred to `redock`'s own tab-removed branch (`state.view(&tab_label)
-    .is_none()` → `state.servers.stop(&tab_label)`), which only fires once the tab actually comes
-    home to find no config slot left for it.
+- **The server must survive the whole hop — three guards keep it alive and are load-bearing:**
+  `pop_out_tab` tears down only the webview (`webviews::close`), never the server; `unload_tab`
+  no-ops on a detached tab (so a stray hover-✕ or ⌘W can't stop the server behind a still-open
+  detached window); and `reload::reconcile`'s `Servers::retain` unions in the detached labels so a
+  hot-reload can't drop a popped-out tab's server mid-session. A *genuinely* removed tab's
+  server-stop is deferred to `redock`'s tab-removed branch. See `commands.rs` / `reload.rs`.
 - **State:** `AppState.detached: Mutex<HashMap<detached_label, LectorDetached>>`, where
   `LectorDetached { origin_wid, tab_label, port }` — kept **separate from `window_meta`** so
   hot-reload reconcile and the Window submenu never see a detached window as a real one; the home
   surface still counts it (`reload::reconcile_home` folds `has_detached` into `has_windows`) since
   it's a real surface on screen. `detached_tab_labels()` flattens the map to the set of tab labels,
   used by `tab_dtos` to set each row's `detached` flag and by the `unload_tab`/`retain` guards above.
-- **Chrome-facing:** `TabPayload.detached` is forwarded through `chrome.js`'s DTO mapping (a new
-  DTO field is invisible to the chrome until that mapping forwards it — the same trap the `tree`/
-  `treePath` footgun elsewhere in this file describes); a detached row renders muted with its ⤢
-  control suppressed, and clicking it calls `raise_popped_window` instead of `select_tab` — there's
-  no local webview to select, so "select" means "bring the popped-out window forward."
+- **Chrome-facing:** `chrome.js`'s DTO map forwards `detached` (the forwarding premise above); a
+  detached row renders muted with its ⤢ control suppressed, and clicking it calls
+  `raise_popped_window` instead of `select_tab` — no local webview to select, so "select" means
+  "raise the popped-out window."
 - **Neither `pop_out_tab` nor `redock` ever holds a lock across the window build or a webview
   call.** `pop_out_tab` reads `window_meta()`/starts the server (both release their locks before
   returning) and only then calls `open_detached`/`show_on` with no lock held; `redock` peeks
@@ -213,9 +204,7 @@ collapsible folder-tree section with a `⟳` rescan button. The leaf is `{ name,
   label, so a **curated tab shadows a same-dir discovered project** (the discovered duplicate is
   dropped) and a repo reachable via two roots lands once — the opposite of the `-n` suffixing two
   hand-authored same-dir tabs get.
-- **`tree`/`tree_path` must be forwarded through `chrome.js`'s DTO map** (`tree: !!t.tree,
-  treePath: t.tree_path ?? []`) — a new DTO field is invisible to chrome-core until the mapping
-  forwards it, the same trap `detached` and the `tree`/`treePath` footgun elsewhere describe.
+- **`tree`/`tree_path` are forwarded through `chrome.js`'s DTO map** (the forwarding premise above);
   chrome-core renders the folder tree + `⟳` from `tree: true` rows and fires `onRescan`.
 - **The `⟳` button is chrome-core's, not a menu item — there is no ⌘R.** `onRescan` invokes the
   `rescan_root` command, which re-reads the config and re-runs `reconcile` (re-scanning disk) via
@@ -224,62 +213,43 @@ collapsible folder-tree section with a `⟳` rescan button. The leaf is `{ name,
 
 ## The `fnv1a_64` / `DefaultHasher` footgun
 
-Any hash that drives a **persistent identifier** must use a **fixed** algorithm, never
-`std::hash::DefaultHasher` — its output is **not** guaranteed stable across Rust releases, so a
-toolchain bump would silently change the value (reading as "the app forgot my layout / remapped my
-tabs", never as a toolchain problem). lector has two such hashes, in two domains, each pinned by a
-known-vectors test:
+Any hash driving a **persistent identifier** must use a **fixed** algorithm (`fnv1a_64`), never
+`std::hash::DefaultHasher` — std doesn't guarantee stability across Rust releases, so a toolchain
+bump silently changes the value and the app reads as "forgot my layout." This is a
+constellation-wide rule, single-sourced in
+[shell-core's CLAUDE.md](https://github.com/Lockyc/shell-core/blob/main/CLAUDE.md); the
+config-crate copy's own rationale and test vectors live at `crates/lector-config/src/hash.rs`.
+lector has two such hashes:
 
-- **Tab label identity** — `crates/lector-config/src/hash.rs::fnv1a_64` hashes a tab's canonicalized
-  dir into its stable webview label. This copy stays in the config crate (label identity is its
-  domain); a drift here would remap every tab's webview. **A tab's *title* is a display label, never
-  an identity or address — duplicates are allowed.** `open_on_launch` is a plain `bool` (unset/`false`
-  = first `load_on_open` tab, `true` = first tab even if cold). **Footgun: don't reintroduce
-  title-as-address** — an `open_on_launch = "<title>"` arm (or any title-keyed lookup) silently
-  re-imposes title uniqueness and gives first-match on a duplicate. curator, lector, and warden share
-  this "title is display-only" rule, so a change is a family-wide decision (`OpenOnLaunch` lived in
-  config-core and was collapsed to a bool to enforce it everywhere).
-- **Window-state filename** — lifted to shell-core: `register_plugins` derives the persisted-bounds
-  filename from the config path via `shell_core::state_filename` (shell-core's own
-  test-vector-pinned `fnv1a_64`). lector no longer owns this hash; it just hands shell-core the path.
-  The canonicalize→hash→format *policy* is identical across the sibling apps — only the path is
-  app-specific — so it lives in shell-core once, not copied per app.
+- **Tab label identity** — `hash.rs::fnv1a_64` hashes a tab's canonicalized dir into its stable
+  webview label; this copy stays in the config crate (label identity is its domain). **A tab's
+  *title* is display-only, never an identity or address — duplicates are allowed**, and
+  `open_on_launch` is a plain `bool` (unset/`false` = first `load_on_open` tab, `true` = first tab
+  even if cold). **Don't reintroduce title-as-address** — an `open_on_launch = "<title>"` arm (or
+  any title-keyed lookup) re-imposes title uniqueness and gives first-match on a duplicate. curator,
+  lector, and warden share this "title is display-only" rule, so changing it is a family-wide
+  decision.
+- **Window-state filename** — owned by shell-core, not lector: `register_plugins` derives it from
+  the config path via `shell_core::state_filename` (see shell-core's CLAUDE.md). lector just hands
+  over the path.
 
-curator shipped a `DefaultHasher` window-state bug (fixed 2026-07-16). Do not reintroduce
-`DefaultHasher` for either hash.
+## The capabilities-file footgun
 
-## The capabilities-file footgun: `has_app_manifest()` bypass does not cover core plugins
+lector's own `#[tauri::command]`s need no capabilities entry (with no app ACL manifest, IPC dispatch
+lets local-sidebar commands through and rejects remote content webviews) — but that bypass does
+**not** cover core *plugin* commands (`core:event`, `core:window`, `updater`, `process`), which
+carry their own default-denied permissions regardless. So the sidebar's hot-reload events, drag
+region, and updater each need an explicit grant in `src-tauri/capabilities/default.json`, and a
+missing grant fails **silently** (the JS `listen()` promise rejects while Rust-side `emit_to` still
+returns `Ok`). The full command-isolation model is single-sourced in
+[shell-core's CLAUDE.md](https://github.com/Lockyc/shell-core/blob/main/CLAUDE.md)
+("command-isolation security model"); lector's verification of it against the pinned tauri source is
+in `commands.rs`'s header.
 
-`commands.rs`'s header doc works out that with no `src-tauri/capabilities/*.json` at all, Tauri's
-IPC dispatch lets every one of *this crate's own* `#[tauri::command]`s through unconditionally for
-the local sidebar webview (`has_app_manifest()` is false, and dispatch only requires a resolved ACL
-when `has_app_acl_manifest || !is_local`). **That analysis is correct, but it does not extend to
-core *plugin* commands** (`core:event`, `core:window`, `updater`, `process`, …) — those carry their
-own default-denied permission set independent of whether the app ships a manifest at all.
-
-**Footgun (found 2026-07-17): lector shipped with zero capabilities for two tasks' worth of work,
-and `event.listen`/window-drag silently no-op'd the whole time.** Config hot-reload's
-`config-reloaded`/`config-error` events (`lib.rs`'s watcher, `src/chrome.js`'s `listen(...)`) never
-fired — `emit_to` on the Rust side returned `Ok(())` every time (success there only means no
-serialization/argument error, never that a listener existed), while the JS `listen()` promise
-silently rejected with `"event.listen not allowed. Permissions associated with this command:
-core:event:allow-listen, core:event:default"`. The sidebar's `data-tauri-drag-region` (the
-`sidebar_drag` config flag) was equally broken, needing `core:window:allow-start-dragging`. The fix
-is `src-tauri/capabilities/default.json`, granting the sidebar (`windows: ["*"]`, `webviews:
-["*"]`, no `remote` block — content webviews are `Origin::Remote` and never match) exactly
-`core:event:allow-listen`/`allow-unlisten`, `core:window:allow-start-dragging`/
-`allow-internal-toggle-maximize`, and the updater's `updater:default`/`process:allow-restart`
-— the last two being exactly what the direct-dependency entries below exist to make
-discoverable.
-
-**`src-tauri/Cargo.toml`'s `tauri-plugin-updater`/`tauri-plugin-process` entries are load-bearing
-despite nothing in this crate calling them — do not delete them as dead weight.** Registration flows
-through shell-core's `register_plugins`, but tauri-build's ACL/permission-schema discovery only walks
-a crate's *direct* dependencies, so a plugin behind shell-core is invisible to it and
-`capabilities/default.json` cannot name its permission. The direct entries exist solely to make
-discovery see them (curator does the same). Removing them while the capability names remain fails the
-build loudly (`"Permission updater:default not found"`); removing both together is the quiet failure —
-the updater silently loses its grant and simply stops updating.
+A plugin's permission can only be *named* if tauri-build's ACL discovery sees the plugin as a
+**direct** dependency — so `src-tauri/Cargo.toml` carries `tauri-plugin-updater`/
+`tauri-plugin-process` entries despite nothing here calling them. **Do not delete them as dead
+weight** — the reason and the silent-failure modes are on those entries in `src-tauri/Cargo.toml`.
 
 ## Toolchain lockstep
 

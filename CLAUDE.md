@@ -116,17 +116,21 @@ and chrome-core's `appName` field, from scratch — it never had its own menu, e
 launcher to delete, so it's the cleanest case of the three apps consuming these.
 
 - **lector contributes no app-specific menu items.** The App, Config, and Window submenus are the
-  shared spine (`shell_core::menu::build_spine`, called in `lib.rs`'s `run()`); lector's own **Tab**
-  submenu holds only the spine's own `Close Tab` (⌘W) and `Pop Out Tab` (⌘⇧O) items — both defined
-  by the spine, just spliced into lector's Tab submenu rather than the spine's own. curator's Tab
-  submenu has Reload Tab / Reset All Tabs / Open Developer Tools; warden's has digit-mode jumps and
-  Reopen Last Closed — none of *those* map onto lector: **compositor's file watcher already
-  live-reloads every open tab on save**, so a manual "Reload Tab" item would be a no-op button;
-  there is no per-tab "session" to reset (a compositor `SiteServer` has no state beyond the served
-  files); and DevTools is one keystroke away regardless. So today the Tab submenu holds only ⌘W and
-  ⌘⇧O (the family's Close Tab standard, plus the pop-out feature — see *Tab pop-out* below). Other
-  tab-scoped actions (reveal-in-Finder, copy the served URL, open the repo dir) are open roadmap,
-  not excluded — the submenu is just empty of them for now.
+  shared spine (`shell_core::menu::build_spine`); lector's own **Tab** submenu is built entirely
+  from shell-core pieces too — `shell_core::menu::build_tab_nav` (⌘⇧[ / ⌘⇧] cycle, ⌘1–9 jump, and
+  the ⌘1/⌘2 cycle aliases in `cycle` mode — see *Keyboard tab navigation* below) around the spine's
+  `Close Tab` (⌘W) and `Pop Out Tab` (⌘⇧O). curator's Tab submenu additionally has Reload Tab /
+  Reset All Tabs / Open Developer Tools; warden's has Reopen Last Closed — none of *those* map onto
+  lector: **compositor's file watcher already live-reloads every open tab on save**, so a manual
+  "Reload Tab" item would be a no-op button; there is no per-tab "session" to reset (a compositor
+  `SiteServer` has no state beyond the served files); and DevTools is one keystroke away regardless.
+  Other tab-scoped actions (reveal-in-Finder, copy the served URL, open the repo dir) are open
+  roadmap, not excluded — the submenu is just empty of them for now.
+- **The whole menu is built by one function, `install_app_menu` (`lib.rs`), called at setup AND
+  again on every clean hot-reload** — not just once at launch like the spine/home-surface adoption
+  originally left it. This is what lets `tab_digit_keys` (below) flip live: a hot-reload's
+  `install_app_menu` call rebuilds the Tab submenu in the new mode and the Window submenu's entries
+  in the same pass, without a relaunch.
 - **The home surface** (`shell_core::home::HOME_LABEL`, `skip_labels` in `register_plugins`) is
   what a fresh install shows: before this, lector built zero windows and no menu when
   `~/.config/lector/config.toml` didn't exist, so it launched to a live, invisible, unrecoverable
@@ -135,6 +139,26 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
 - **`appName: "lector"`** (`src/chrome.js`'s mount config) names the app in chrome-core's
   `#cc-titlebar` strip beside the traffic lights; `src/chrome.css`'s `#sidebar` carries no
   `padding-top` of its own — chrome-core owns that inset now.
+
+## Keyboard tab navigation
+
+The Tab menu's nav block (⌘⇧[ / ⌘⇧] cycle, ⌘1–9 jump) is `shell_core::menu::build_tab_nav`,
+shared with warden and curator — see *The menu spine* above for where it's spliced into lector's
+Tab submenu and rebuilt on hot-reload. **`tab_digit_keys`** (`Config`, whole-app, no per-window
+cascade) picks what ⌘1/⌘2 do: default `jump` — ⌘1–⌘9 jump straight to a tab position; `cycle`
+makes ⌘1 next tab / ⌘2 previous and shifts the jump items to ⌘3–⌘9. An unrecognised token is a
+load error (`config_core::TabDigitKeys`'s own serde impl), not a silent fallback.
+
+- **The menu handler is mode-blind.** `shell_core::menu::tab_nav_action` resolves a fired item's id
+  to `Next`/`Prev`/`Jump(n)` — the ⌘1/⌘2 cycle aliases collapse onto `Next`/`Prev` before lector
+  ever sees them — so `lib.rs`'s `on_menu_event` just emits `nav-tab` (payload ±1) or `jump-tab`
+  (payload = 1-based position) to the focused window's chrome, exactly like `close-tab`/
+  `pop-out-tab`.
+- **The chrome routes through the normal click path.** `src/chrome.js`'s `nav-tab`/`jump-tab`
+  listeners call chrome-core's `selectByOffset`/`selectByIndex`, so a cold tab that a cycle or
+  jump lands on still starts its `compositor serve` loop on demand — nothing here bypasses
+  `select_tab`. Cycling spans **every** tab (`liveOnly: false`): lector has no cold-skip concept
+  the way a throttled/hidden tab might mean elsewhere.
 
 ## Tab pop-out: detach a tab into its own window
 

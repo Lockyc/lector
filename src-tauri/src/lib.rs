@@ -252,6 +252,53 @@ pub(crate) fn reload_now(app: &tauri::AppHandle) {
     reload::reconcile_home(app, &entries, &path.to_string_lossy(), path.exists(), None);
 }
 
+/// Build and install the app menu: the shared spine (App/Config/Window) plus lector's own Tab
+/// submenu — shell-core's tab-nav block (⌘⇧[ / ⌘⇧] , ⌘1–9 jumps, and the ⌘1/⌘2 cycle aliases
+/// when `mode` asks for them) around the spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O).
+///
+/// Called at setup **and again on every clean hot-reload**, so a `tab_digit_keys` flip applies
+/// without a relaunch — matching warden and curator.
+fn install_app_menu(
+    app: &tauri::AppHandle,
+    config_path: &std::path::Path,
+    mode: lector_config::TabDigitKeys,
+    window_entries: &[shell_core::menu::WindowEntry],
+) -> tauri::Result<()> {
+    let spine = shell_core::menu::build_spine(
+        app,
+        shell_core::menu::SpineConfig {
+            app_name: "lector",
+            config_path,
+            windows: window_entries,
+        },
+        env!("CARGO_PKG_VERSION"),
+        env!("BUILD_GIT_SHA"),
+        env!("BUILD_DATE"),
+    )?;
+    let nav = shell_core::menu::build_tab_nav(app, mode.is_cycle())?;
+    let mut tab_menu = tauri::menu::SubmenuBuilder::new(app, "Tab");
+    for it in &nav.nav {
+        tab_menu = tab_menu.item(it);
+    }
+    tab_menu = tab_menu
+        .separator()
+        .item(&spine.close_tab)
+        .item(&spine.pop_out_tab)
+        .separator();
+    for it in &nav.jumps {
+        tab_menu = tab_menu.item(it);
+    }
+    let tab_menu = tab_menu.build()?;
+    let items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![
+        &spine.submenus[0], // App
+        &tab_menu,
+        &spine.submenus[1], // Config
+        &spine.submenus[2], // Window
+    ];
+    app.set_menu(tauri::menu::MenuBuilder::new(app).items(&items).build()?)?;
+    Ok(())
+}
+
 pub fn run() {
     let config_path = lector_config::resolve_config_path();
     let app = shell_core::register_plugins(
@@ -314,38 +361,30 @@ pub fn run() {
             }
         }
 
-        // The menu spine: App/Config/Window are shared (shell-core), Tab is lector's own — it
-        // holds the spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O), since compositor's watcher makes
-        // a Reload Tab meaningless here and there is no Reset All analogue.
+        // The menu spine: App/Config/Window are shared (shell-core), Tab is lector's own — see
+        // `install_app_menu`'s doc comment for what it holds and why it's rebuilt on every
+        // clean hot-reload, not just here at setup.
         let window_entries = reload::window_entries(app.handle(), &state.window_meta());
-        let spine = shell_core::menu::build_spine(
-            app,
-            shell_core::menu::SpineConfig {
-                app_name: "lector",
-                config_path: &path,
-                windows: &window_entries,
-            },
-            env!("CARGO_PKG_VERSION"),
-            env!("BUILD_GIT_SHA"),
-            env!("BUILD_DATE"),
-        )?;
-        let tab_menu = tauri::menu::SubmenuBuilder::new(app, "Tab")
-            .item(&spine.close_tab)
-            .item(&spine.pop_out_tab)
-            .build()?;
-        let items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![
-            &spine.submenus[0], // App
-            &tab_menu,
-            &spine.submenus[1], // Config
-            &spine.submenus[2], // Window
-        ];
-        app.set_menu(tauri::menu::MenuBuilder::new(app).items(&items).build()?)?;
+        install_app_menu(app.handle(), &path, cfg.tab_digit_keys, &window_entries)?;
 
         let cfg_for_menu = path.clone();
         app.on_menu_event(move |app, event| {
             let id = event.id().as_ref();
             // The spine's file-acting ids need no window — let it consume them first.
             if shell_core::menu::handle_spine_event(id, &cfg_for_menu) {
+                return;
+            }
+            // Tab navigation (⌘⇧[ / ⌘⇧] , ⌘1–9, and the ⌘1/⌘2 cycle aliases). shell-core routes
+            // the id, so this handler is mode-blind — the aliases arrive as plain Next/Prev. The
+            // chrome resolves the target row and selects it through the normal click path, so a
+            // cold tab still starts its server on demand.
+            if let Some(action) = shell_core::menu::tab_nav_action(id) {
+                use shell_core::menu::TabNavAction;
+                match action {
+                    TabNavAction::Next => emit_to_focused_chrome(app, "nav-tab", 1i32),
+                    TabNavAction::Prev => emit_to_focused_chrome(app, "nav-tab", -1i32),
+                    TabNavAction::Jump(n) => emit_to_focused_chrome(app, "jump-tab", n),
+                }
                 return;
             }
             match id {
@@ -399,6 +438,7 @@ pub fn run() {
         // closure returns on a format write). lector supplies just the parse + apply.
         let app_handle = app.handle().clone();
         let fmt_path = path.clone();
+        let menu_path = path.clone();
         shell_core::watch::watch_config(path.clone(), move |src| {
             match lector_config::parse_and_validate(src) {
                 Ok((new_cfg, warnings)) => {
@@ -428,6 +468,10 @@ pub fn run() {
                     }
                     let state = app_handle.state::<commands::AppState>();
                     let entries = reload::window_entries(&app_handle, &state.window_meta());
+                    // The app menu is global, not part of the per-window reconcile: rebuild it so a
+                    // `tab_digit_keys` flip (and the Window submenu's entries) track the new config.
+                    let _ =
+                        install_app_menu(&app_handle, &menu_path, new_cfg.tab_digit_keys, &entries);
                     reload::reconcile_home(
                         &app_handle,
                         &entries,

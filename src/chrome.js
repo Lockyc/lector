@@ -291,4 +291,14 @@ listen("pop-out-tab", () => {
   if (activeLabel) popOutTab(activeLabel);
 });
 
+// Keyboard tab navigation (Tab menu): ⌘⇧[ / ⌘⇧] cycle, ⌘1–9 jump to a position — and, under
+// `tab_digit_keys = "cycle"`, ⌘1 / ⌘2 arrive here as the same nav-tab ±1. Cycling spans ALL tabs
+// (liveOnly:false): a cold tab starts its server when selected, so there is nothing to skip.
+listen("nav-tab", (e) => {
+  if (sb) sb.selectByOffset(e.payload, { liveOnly: false });
+});
+listen("jump-tab", (e) => {
+  if (sb) sb.selectByIndex(e.payload);
+});
+
 mountChrome();

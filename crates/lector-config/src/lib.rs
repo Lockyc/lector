@@ -5,7 +5,7 @@
 //! `lector_config::{Colour, format_file, format_str}`.
 pub use config_core::{
     discover_projects, fmt_cli, format_file, format_str, write_default_config, Colour, ColourError,
-    Density, DiscoveredProject, Group, RootDir, SeedError, Warning,
+    Density, DiscoveredProject, Group, RootDir, SeedError, TabDigitKeys, Warning,
 };
 
 pub mod hash;
@@ -43,6 +43,11 @@ pub struct Config {
     /// available regardless. The chrome gates its launch check on this.
     #[serde(default = "config_core::default_true")]
     pub auto_update: bool,
+    /// What ⌘1/⌘2 do in the Tab menu (whole-app, no per-window cascade). Default `jump` —
+    /// ⌘1–⌘9 jump to that tab position. `cycle` makes ⌘1 next / ⌘2 previous and shifts the
+    /// jumps to ⌘3–⌘9. Hot-reloads: the app menu is rebuilt on every clean reload.
+    #[serde(default)]
+    pub tab_digit_keys: TabDigitKeys,
     #[serde(default, rename = "window")]
     pub windows: Vec<WindowConfig>,
 }
@@ -59,6 +64,7 @@ impl Default for Config {
             density: Density::Comfortable,
             sidebar_drag: true,
             auto_update: true,
+            tab_digit_keys: TabDigitKeys::Jump,
             windows: Vec::new(),
         }
     }
@@ -1008,6 +1014,18 @@ dir = "/tmp"
             "discovered duplicate of a curated tab must be dropped"
         );
         assert_eq!(views[0].title, "curated");
+    }
+
+    #[test]
+    fn tab_digit_keys_defaults_to_jump_and_parses_cycle() {
+        let (cfg, _) = parse_and_validate("").unwrap();
+        assert_eq!(cfg.tab_digit_keys, TabDigitKeys::Jump);
+
+        let (cfg, _) = parse_and_validate("tab_digit_keys = \"cycle\"\n").unwrap();
+        assert_eq!(cfg.tab_digit_keys, TabDigitKeys::Cycle);
+
+        // An unknown token is a load error, not a silent default.
+        assert!(parse_and_validate("tab_digit_keys = \"wiggle\"\n").is_err());
     }
 
     #[test]

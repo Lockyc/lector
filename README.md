@@ -72,6 +72,9 @@ build from source.
 - **Native navigation.** Mouse side-buttons drive back/forward through a tab's history via a
   shared shell-core NSEvent monitor, and a determinate progress bar tracks content-webview
   loading — both alongside the sidebar's ◀ ▶ ⌂ nav pill.
+- **Keyboard tab navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle to the previous/next
+  tab and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to make **⌘1** / **⌘2**
+  cycle instead (jumps shift to **⌘3–⌘9**).
 - **Nothing deployed.** There is no build/publish step in the loop — the whole point is to
   render a doc repo's *working tree* as you edit it.
 

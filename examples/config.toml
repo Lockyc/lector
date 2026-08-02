@@ -1,6 +1,10 @@
 dark_mode = true
 density   = "compact"
 
+# What ⌘1/⌘2 do: "jump" (default — ⌘1–⌘9 jump to a tab position) or "cycle" (⌘1 next tab,
+# ⌘2 previous, jumps shift to ⌘3–⌘9). Hot-reloads.
+# tab_digit_keys = "cycle"
+
 [[window]]
   title  = "Docs"
   width  = 1400

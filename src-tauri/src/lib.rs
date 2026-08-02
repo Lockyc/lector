@@ -249,6 +249,11 @@ pub(crate) fn reload_now(app: &tauri::AppHandle) {
 
     let meta = state.window_meta();
     let entries = reload::window_entries(app, &meta);
+    // Rebuild the app menu here too, same as the config-file watcher's reload branch — this is
+    // also a clean config load (the home surface's "Create a starter config" button ends up here
+    // via commands::shell_home_create_config), so a `tab_digit_keys` in the freshly-written
+    // config, and the Window submenu's new entries, must take effect without a relaunch.
+    let _ = install_app_menu(app, &path, cfg.tab_digit_keys, &entries);
     reload::reconcile_home(app, &entries, &path.to_string_lossy(), path.exists(), None);
 }
 

@@ -182,8 +182,9 @@ pub struct AppState {
     window_meta: Mutex<Vec<WindowMeta>>,
     /// Tabs currently popped out into their own detached window, keyed by the detached window's
     /// Tauri label ([`shell_core::detach::detached_label`]). **Separate from `window_meta`** so
-    /// reconcile/window-state never touch these ephemeral windows, and so the home-surface check can
-    /// still count them (`reload::reconcile_home`) — a detached window is a real surface on screen.
+    /// reconcile never touches these ephemeral windows (shell-core's geometry module excludes them
+    /// structurally too — see its CLAUDE.md), and so the home-surface check can still count them
+    /// (`reload::reconcile_home`) — a detached window is a real surface on screen.
     pub detached: Mutex<HashMap<String, LectorDetached>>,
 }
 

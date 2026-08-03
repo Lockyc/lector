@@ -1,7 +1,9 @@
 //! Window label identity. The window id namespaces a window's tab labels (Tauri labels are
-//! app-global, so two windows sharing a repo would otherwise collide). It's a purely mechanical,
-//! run-ephemeral label key — nothing persistent is tied to it, so renaming a window is harmless.
-//! Derived from the title via frozen FNV-1a.
+//! app-global, so two windows sharing a repo would otherwise collide). It's the Tauri window
+//! label itself, so shell-core's geometry module keys a window's saved bounds by this same
+//! value: renaming a window's title changes its id and orphans (not corrupts) its saved
+//! geometry — the window just restores at default bounds next launch, same as a first-run
+//! window. Derived from the title via frozen FNV-1a.
 
 use crate::hash::fnv1a_64;
 

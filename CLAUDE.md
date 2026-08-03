@@ -95,7 +95,7 @@ lector also consumes the render/serve engine:
   config-core pins.
 - **shell-core** (`https://github.com/Lockyc/shell-core`) — shared release tooling (the three
   release scripts, materialized git-ignored into `scripts/`) plus a sliver of Tauri runtime
-  setup (`register_plugins` for window-state/updater/process). **Pinned twice in
+  setup (`register_plugins` for window geometry/updater/process). **Pinned twice in
   `src-tauri/Cargo.toml`**, per its zero-dep/runtime feature split:
   - `[build-dependencies]`: `default-features = false` — `build.rs` needs only `build_stamp()`
     and the embedded script consts, which are zero-dependency.
@@ -105,6 +105,15 @@ lector also consumes the render/serve engine:
   consumer's `[build-dependencies]` drags in the whole tauri tree just to run `build.rs`.
   Resolver 2 resolves the two feature sets independently. Bump both entries to the same rev in
   lockstep.
+
+  **Window geometry** — shell-core's own `geometry` module, replacing `tauri-plugin-window-state`
+  (which lector never depended on directly). It persists each window's size/position in **AppKit
+  points**, clamps every restore to the target monitor's work area, and never records geometry
+  while a window is fullscreen or minimized (covers classic Split View; Sequoia's drag-to-edge
+  *tiling* is not a fullscreen space, so a tiled window's ordinary bounds are still recorded,
+  correctly). The home surface and any popped-out tab window are excluded from save and restore
+  **structurally**, inside the module — `register_plugins`'s `skip_labels` is reserved for an
+  app's *own* transient windows, and lector passes `&[]` (it has none).
 
 All four are git dependencies, git-ignored/materialized, or `[patch]`-overridable for local dev
 — never vendor one in-tree.
@@ -131,7 +140,7 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
   originally left it. This is what lets `tab_digit_keys` (below) flip live: a hot-reload's
   `install_app_menu` call rebuilds the Tab submenu in the new mode and the Window submenu's entries
   in the same pass, without a relaunch.
-- **The home surface** (`shell_core::home::HOME_LABEL`, `skip_labels` in `register_plugins`) is
+- **The home surface** (`shell_core::home::{home_state, show_home, close_home}`) is
   what a fresh install shows: before this, lector built zero windows and no menu when
   `~/.config/lector/config.toml` didn't exist, so it launched to a live, invisible, unrecoverable
   process. Its "Create a starter config" button is `commands::shell_home_create_config`, calling
@@ -243,8 +252,15 @@ bump silently changes the value and the app reads as "forgot my layout." This is
 constellation-wide rule, single-sourced in
 [shell-core's CLAUDE.md](https://github.com/Lockyc/shell-core/blob/main/CLAUDE.md); the
 config-crate copy's own rationale and test vectors live at `crates/lector-config/src/hash.rs`.
-lector has two such hashes:
+lector has three such hashes:
 
+- **Window id** — `hash.rs::fnv1a_64` hashes a window's `title` into `window_id`
+  (`identity::window_id`), which **is** the Tauri window label shell-core's geometry module keys a
+  window's saved bounds by. A rustc bump that reshuffled the hash would silently reset every
+  window's saved geometry to defaults — the same "forgot my layout" symptom the intro names, one
+  layer up from the geometry-store filename below. Renaming a window's title has the same effect
+  on purpose (see `identity.rs`): it's a *new* label, so its old saved bounds are orphaned, not
+  corrupted.
 - **Tab label identity** — `hash.rs::fnv1a_64` hashes a tab's canonicalized dir into its stable
   webview label; this copy stays in the config crate (label identity is its domain). **A tab's
   *title* is display-only, never an identity or address — duplicates are allowed**, and
@@ -253,9 +269,11 @@ lector has two such hashes:
   any title-keyed lookup) re-imposes title uniqueness and gives first-match on a duplicate. curator,
   lector, and warden share this "title is display-only" rule, so changing it is a family-wide
   decision.
-- **Window-state filename** — owned by shell-core, not lector: `register_plugins` derives it from
-  the config path via `shell_core::state_filename` (see shell-core's CLAUDE.md). lector just hands
-  over the path.
+- **Window geometry-store filename** — owned by shell-core, not lector: `register_plugins` derives
+  it from the resolved config path via `shell_core::geometry_filename`, which hashes the
+  canonicalized path with shell-core's **own** copy of `fnv1a_64` (see shell-core's CLAUDE.md) — a
+  separate instance from this crate's, hashing a different domain (a config path, not a window
+  title or a tab dir). lector just hands over the path.
 
 ## The capabilities-file footgun
 

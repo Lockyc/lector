@@ -306,229 +306,231 @@ fn install_app_menu(
 
 pub fn run() {
     let config_path = lector_config::resolve_config_path();
-    let app = shell_core::register_plugins(
-        tauri::Builder::default(),
-        Some(&config_path),
-        &[shell_core::home::HOME_LABEL],
-    )
-    .manage(commands::AppState::new())
-    .setup(move |app| {
-        let path = lector_config::resolve_config_path();
-        let mut load_error: Option<String> = None;
-        let (cfg, warnings) = match lector_config::load_config(&path) {
-            Ok((c, warnings)) => (c, warnings),
-            Err(e) => {
-                eprintln!("config error: {e}");
-                load_error = Some(e.to_string());
-                (lector_config::Config::default(), Vec::new())
-            }
-        };
-
-        // Build every configured window (+ its accent colour) first, so the reconcile below —
-        // and the `open_on_launch` selection after it — have somewhere to point a webview at.
-        // Every window is new at launch, so `built` below is always all of `window_ids`.
-        let built = build_missing_windows(app.handle(), &cfg);
-        let window_ids: Vec<String> = cfg
-            .windows
-            .iter()
-            .map(|w| lector_config::identity::window_id(&w.title))
-            .collect();
-
-        apply_config(app.handle(), &cfg, &warnings);
-
-        // Native mouse side-button (back/forward) navigation — the shared shell-core NSEvent monitor
-        // (WKWebView never delivers the side buttons to the DOM). lector supplies the
-        // focused-active-webview resolver; shell-core owns the monitor + native goBack/goForward.
-        let mouse_nav_handle = app.handle().clone();
-        shell_core::mouse_nav::install(move || {
-            let win = mouse_nav_handle.get_focused_window()?;
-            let label = mouse_nav_handle
-                .state::<commands::AppState>()
-                .active_for(win.label())?;
-            win.get_webview(&label)
-        });
-
-        // Launch selection (`WindowConfig::startup_label` — the first load_on_open tab by default,
-        // or whatever `open_on_launch` overrides to): select it exactly the way a click would
-        // (`commands::select` — start-if-cold, show, mark active), never a shadow copy of that
-        // logic. A failure (e.g. the tab's dir doesn't exist yet) just stays cold; it isn't fatal
-        // to launch.
-        let state = app.state::<commands::AppState>();
-        for win_cfg in &cfg.windows {
-            let wid = lector_config::identity::window_id(&win_cfg.title);
-            if !built.contains(&wid) {
-                continue;
-            }
-            if let Some(label) = win_cfg.startup_label() {
-                if let Err(e) = commands::select(app.handle(), &state, &label) {
-                    eprintln!("startup selection failed for {label:?}: {e}");
+    let app = shell_core::register_plugins(tauri::Builder::default(), Some(&config_path), &[])
+        .manage(commands::AppState::new())
+        .setup(move |app| {
+            let path = lector_config::resolve_config_path();
+            let mut load_error: Option<String> = None;
+            let (cfg, warnings) = match lector_config::load_config(&path) {
+                Ok((c, warnings)) => (c, warnings),
+                Err(e) => {
+                    eprintln!("config error: {e}");
+                    load_error = Some(e.to_string());
+                    (lector_config::Config::default(), Vec::new())
                 }
-            }
-        }
+            };
 
-        // The menu spine: App/Config/Window are shared (shell-core), Tab is lector's own — see
-        // `install_app_menu`'s doc comment for what it holds and why it's rebuilt on every
-        // clean hot-reload, not just here at setup.
-        let window_entries = reload::window_entries(app.handle(), &state.window_meta());
-        install_app_menu(app.handle(), &path, cfg.tab_digit_keys, &window_entries)?;
+            // Build every configured window (+ its accent colour) first, so the reconcile below —
+            // and the `open_on_launch` selection after it — have somewhere to point a webview at.
+            // Every window is new at launch, so `built` below is always all of `window_ids`.
+            let built = build_missing_windows(app.handle(), &cfg);
+            let window_ids: Vec<String> = cfg
+                .windows
+                .iter()
+                .map(|w| lector_config::identity::window_id(&w.title))
+                .collect();
 
-        let cfg_for_menu = path.clone();
-        app.on_menu_event(move |app, event| {
-            let id = event.id().as_ref();
-            // The spine's file-acting ids need no window — let it consume them first.
-            if shell_core::menu::handle_spine_event(id, &cfg_for_menu) {
-                return;
-            }
-            // Tab navigation (⌘⇧[ / ⌘⇧] , ⌘1–9, and the ⌘1/⌘2 cycle aliases). shell-core routes
-            // the id, so this handler is mode-blind — the aliases arrive as plain Next/Prev. The
-            // chrome resolves the target row and selects it through the normal click path, so a
-            // cold tab still starts its server on demand.
-            if let Some(action) = shell_core::menu::tab_nav_action(id) {
-                use shell_core::menu::TabNavAction;
-                match action {
-                    TabNavAction::Next => emit_to_focused_chrome(app, "nav-tab", 1i32),
-                    TabNavAction::Prev => emit_to_focused_chrome(app, "nav-tab", -1i32),
-                    TabNavAction::Jump(n) => emit_to_focused_chrome(app, "jump-tab", n),
+            apply_config(app.handle(), &cfg, &warnings);
+
+            // Native mouse side-button (back/forward) navigation — the shared shell-core NSEvent monitor
+            // (WKWebView never delivers the side buttons to the DOM). lector supplies the
+            // focused-active-webview resolver; shell-core owns the monitor + native goBack/goForward.
+            let mouse_nav_handle = app.handle().clone();
+            shell_core::mouse_nav::install(move || {
+                let win = mouse_nav_handle.get_focused_window()?;
+                let label = mouse_nav_handle
+                    .state::<commands::AppState>()
+                    .active_for(win.label())?;
+                win.get_webview(&label)
+            });
+
+            // Launch selection (`WindowConfig::startup_label` — the first load_on_open tab by default,
+            // or whatever `open_on_launch` overrides to): select it exactly the way a click would
+            // (`commands::select` — start-if-cold, show, mark active), never a shadow copy of that
+            // logic. A failure (e.g. the tab's dir doesn't exist yet) just stays cold; it isn't fatal
+            // to launch.
+            let state = app.state::<commands::AppState>();
+            for win_cfg in &cfg.windows {
+                let wid = lector_config::identity::window_id(&win_cfg.title);
+                if !built.contains(&wid) {
+                    continue;
                 }
-                return;
-            }
-            match id {
-                // chrome-core owns self-update; forward to its checkForUpdateNow().
-                shell_core::menu::ids::CHECK_UPDATES => {
-                    emit_to_focused_chrome(app, "check-update", ())
-                }
-                // ⌘W unloads the ACTIVE TAB — it does not close the window. The chrome owns
-                // which tab is active and the dot repaint, so it drives unload_tab off this
-                // event (warden's model, now the family standard).
-                shell_core::menu::ids::CLOSE_TAB => emit_to_focused_chrome(app, "close-tab", ()),
-                // ⌘⇧O pops the focused window's active tab out into its own window. The chrome owns
-                // which tab is active, so it drives pop_out_tab off this event (routed to only the
-                // focused window's chrome, the same per-window emit pattern as close-tab).
-                shell_core::menu::ids::POP_OUT_TAB => {
-                    emit_to_focused_chrome(app, "pop-out-tab", ())
-                }
-                shell_core::menu::ids::CLOSE_WINDOW => {
-                    if let Some(win) = app.get_focused_window() {
-                        let _ = win.close();
-                    }
-                }
-                id => {
-                    if let Some(wid) = shell_core::menu::selected_window(id) {
-                        open_or_focus_window(app, wid);
+                if let Some(label) = win_cfg.startup_label() {
+                    if let Err(e) = commands::select(app.handle(), &state, &label) {
+                        eprintln!("startup selection failed for {label:?}: {e}");
                     }
                 }
             }
-        });
 
-        // The home surface: never stranded invisible. `has_windows` is derived inside
-        // `reconcile_home` from `window_entries`'s own `open` flags, which are all `true` here
-        // (every window built above is live) — so this only actually shows anything when the
-        // config had zero `[[window]]` blocks or failed to load at all.
-        reload::reconcile_home(
-            app.handle(),
-            &window_entries,
-            &path.to_string_lossy(),
-            path.exists(),
-            load_error.as_deref(),
-        );
+            // The menu spine: App/Config/Window are shared (shell-core), Tab is lector's own — see
+            // `install_app_menu`'s doc comment for what it holds and why it's rebuilt on every
+            // clean hot-reload, not just here at setup.
+            let window_entries = reload::window_entries(app.handle(), &state.window_meta());
+            install_app_menu(app.handle(), &path, cfg.tab_digit_keys, &window_entries)?;
 
-        // Watch the config file and hot-reload on change, keeping the last-good config (and
-        // surfacing the error to every window's chrome) if the new contents don't
-        // parse/validate. A failed reload tears nothing down — see `reload::reconcile`'s doc
-        // and `lector_config`'s "missing dir warns, never errors" rule this mirrors: an
-        // un-cloned repo, or a config with one bad line, must not strand every other tab.
-        // The shared shell-core watcher owns the parent-dir watch, the file-name match (macOS
-        // FSEvents-robust — the fix for the old exact-path bug that silently missed every event
-        // under a symlinked config dir), and the echo-swallow (via the `Option<String>` the
-        // closure returns on a format write). lector supplies just the parse + apply.
-        let app_handle = app.handle().clone();
-        let fmt_path = path.clone();
-        let menu_path = path.clone();
-        shell_core::watch::watch_config(path.clone(), move |src| {
-            match lector_config::parse_and_validate(src) {
-                Ok((new_cfg, warnings)) => {
-                    // Format-on-save: rewrite in house style on a clean reload. `format_file` is
-                    // diff-guarded (a no-op on already-formatted bytes); when it rewrites, return
-                    // the formatted bytes so the watcher swallows the echo — one reload per user
-                    // save, not two.
-                    let self_write = if new_cfg.format_on_save {
-                        let formatted = lector_config::format_str(src);
-                        if formatted != src {
-                            match lector_config::format_file(&fmt_path) {
-                                Ok(_) => Some(formatted),
-                                Err(e) => {
-                                    eprintln!("config format error: {e}");
-                                    None
+            let cfg_for_menu = path.clone();
+            app.on_menu_event(move |app, event| {
+                let id = event.id().as_ref();
+                // The spine's file-acting ids need no window — let it consume them first.
+                if shell_core::menu::handle_spine_event(id, &cfg_for_menu) {
+                    return;
+                }
+                // Tab navigation (⌘⇧[ / ⌘⇧] , ⌘1–9, and the ⌘1/⌘2 cycle aliases). shell-core routes
+                // the id, so this handler is mode-blind — the aliases arrive as plain Next/Prev. The
+                // chrome resolves the target row and selects it through the normal click path, so a
+                // cold tab still starts its server on demand.
+                if let Some(action) = shell_core::menu::tab_nav_action(id) {
+                    use shell_core::menu::TabNavAction;
+                    match action {
+                        TabNavAction::Next => emit_to_focused_chrome(app, "nav-tab", 1i32),
+                        TabNavAction::Prev => emit_to_focused_chrome(app, "nav-tab", -1i32),
+                        TabNavAction::Jump(n) => emit_to_focused_chrome(app, "jump-tab", n),
+                    }
+                    return;
+                }
+                match id {
+                    // chrome-core owns self-update; forward to its checkForUpdateNow().
+                    shell_core::menu::ids::CHECK_UPDATES => {
+                        emit_to_focused_chrome(app, "check-update", ())
+                    }
+                    // ⌘W unloads the ACTIVE TAB — it does not close the window. The chrome owns
+                    // which tab is active and the dot repaint, so it drives unload_tab off this
+                    // event (warden's model, now the family standard).
+                    shell_core::menu::ids::CLOSE_TAB => {
+                        emit_to_focused_chrome(app, "close-tab", ())
+                    }
+                    // ⌘⇧O pops the focused window's active tab out into its own window. The chrome owns
+                    // which tab is active, so it drives pop_out_tab off this event (routed to only the
+                    // focused window's chrome, the same per-window emit pattern as close-tab).
+                    shell_core::menu::ids::POP_OUT_TAB => {
+                        emit_to_focused_chrome(app, "pop-out-tab", ())
+                    }
+                    shell_core::menu::ids::CLOSE_WINDOW => {
+                        if let Some(win) = app.get_focused_window() {
+                            let _ = win.close();
+                        }
+                    }
+                    id => {
+                        if let Some(wid) = shell_core::menu::selected_window(id) {
+                            open_or_focus_window(app, wid);
+                        }
+                    }
+                }
+            });
+
+            // The home surface: never stranded invisible. `has_windows` is derived inside
+            // `reconcile_home` from `window_entries`'s own `open` flags, which are all `true` here
+            // (every window built above is live) — so this only actually shows anything when the
+            // config had zero `[[window]]` blocks or failed to load at all.
+            reload::reconcile_home(
+                app.handle(),
+                &window_entries,
+                &path.to_string_lossy(),
+                path.exists(),
+                load_error.as_deref(),
+            );
+
+            // Watch the config file and hot-reload on change, keeping the last-good config (and
+            // surfacing the error to every window's chrome) if the new contents don't
+            // parse/validate. A failed reload tears nothing down — see `reload::reconcile`'s doc
+            // and `lector_config`'s "missing dir warns, never errors" rule this mirrors: an
+            // un-cloned repo, or a config with one bad line, must not strand every other tab.
+            // The shared shell-core watcher owns the parent-dir watch, the file-name match (macOS
+            // FSEvents-robust — the fix for the old exact-path bug that silently missed every event
+            // under a symlinked config dir), and the echo-swallow (via the `Option<String>` the
+            // closure returns on a format write). lector supplies just the parse + apply.
+            let app_handle = app.handle().clone();
+            let fmt_path = path.clone();
+            let menu_path = path.clone();
+            shell_core::watch::watch_config(path.clone(), move |src| {
+                match lector_config::parse_and_validate(src) {
+                    Ok((new_cfg, warnings)) => {
+                        // Format-on-save: rewrite in house style on a clean reload. `format_file` is
+                        // diff-guarded (a no-op on already-formatted bytes); when it rewrites, return
+                        // the formatted bytes so the watcher swallows the echo — one reload per user
+                        // save, not two.
+                        let self_write = if new_cfg.format_on_save {
+                            let formatted = lector_config::format_str(src);
+                            if formatted != src {
+                                match lector_config::format_file(&fmt_path) {
+                                    Ok(_) => Some(formatted),
+                                    Err(e) => {
+                                        eprintln!("config format error: {e}");
+                                        None
+                                    }
                                 }
+                            } else {
+                                None
                             }
                         } else {
                             None
+                        };
+                        apply_config(&app_handle, &new_cfg, &warnings);
+                        for wid in &window_ids {
+                            let _ = app_handle.emit_to(wid.as_str(), "config-reloaded", ());
                         }
-                    } else {
+                        let state = app_handle.state::<commands::AppState>();
+                        let entries = reload::window_entries(&app_handle, &state.window_meta());
+                        // The app menu is global, not part of the per-window reconcile: rebuild it so a
+                        // `tab_digit_keys` flip (and the Window submenu's entries) track the new config.
+                        let _ = install_app_menu(
+                            &app_handle,
+                            &menu_path,
+                            new_cfg.tab_digit_keys,
+                            &entries,
+                        );
+                        reload::reconcile_home(
+                            &app_handle,
+                            &entries,
+                            &fmt_path.to_string_lossy(),
+                            true,
+                            None,
+                        );
+                        self_write
+                    }
+                    Err(e) => {
+                        // Last-good-on-failure: `apply_config` never ran, so state (and every
+                        // running server) is untouched — only the error is surfaced.
+                        let msg = e.to_string();
+                        eprintln!("config error: {msg}");
+                        for wid in &window_ids {
+                            let _ = app_handle.emit_to(wid.as_str(), "config-error", msg.clone());
+                        }
+                        let state = app_handle.state::<commands::AppState>();
+                        let entries = reload::window_entries(&app_handle, &state.window_meta());
+                        reload::reconcile_home(
+                            &app_handle,
+                            &entries,
+                            &fmt_path.to_string_lossy(),
+                            true,
+                            Some(&msg),
+                        );
                         None
-                    };
-                    apply_config(&app_handle, &new_cfg, &warnings);
-                    for wid in &window_ids {
-                        let _ = app_handle.emit_to(wid.as_str(), "config-reloaded", ());
                     }
-                    let state = app_handle.state::<commands::AppState>();
-                    let entries = reload::window_entries(&app_handle, &state.window_meta());
-                    // The app menu is global, not part of the per-window reconcile: rebuild it so a
-                    // `tab_digit_keys` flip (and the Window submenu's entries) track the new config.
-                    let _ =
-                        install_app_menu(&app_handle, &menu_path, new_cfg.tab_digit_keys, &entries);
-                    reload::reconcile_home(
-                        &app_handle,
-                        &entries,
-                        &fmt_path.to_string_lossy(),
-                        true,
-                        None,
-                    );
-                    self_write
                 }
-                Err(e) => {
-                    // Last-good-on-failure: `apply_config` never ran, so state (and every
-                    // running server) is untouched — only the error is surfaced.
-                    let msg = e.to_string();
-                    eprintln!("config error: {msg}");
-                    for wid in &window_ids {
-                        let _ = app_handle.emit_to(wid.as_str(), "config-error", msg.clone());
-                    }
-                    let state = app_handle.state::<commands::AppState>();
-                    let entries = reload::window_entries(&app_handle, &state.window_meta());
-                    reload::reconcile_home(
-                        &app_handle,
-                        &entries,
-                        &fmt_path.to_string_lossy(),
-                        true,
-                        Some(&msg),
-                    );
-                    None
-                }
-            }
-        });
+            });
 
-        Ok(())
-    })
-    .invoke_handler(tauri::generate_handler![
-        commands::get_tabs,
-        commands::window_identity,
-        commands::select_tab,
-        commands::unload_tab,
-        commands::home_tab,
-        commands::nav_back,
-        commands::nav_forward,
-        commands::set_hole_rect,
-        commands::pop_out_tab,
-        commands::raise_popped_window,
-        commands::pop_in_tab,
-        commands::rescan_root,
-        commands::shell_home_create_config,
-        commands::shell_home_edit_config,
-        commands::shell_home_open_window,
-    ])
-    .build(tauri::generate_context!())
-    .expect("error while building lector");
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_tabs,
+            commands::window_identity,
+            commands::select_tab,
+            commands::unload_tab,
+            commands::home_tab,
+            commands::nav_back,
+            commands::nav_forward,
+            commands::set_hole_rect,
+            commands::pop_out_tab,
+            commands::raise_popped_window,
+            commands::pop_in_tab,
+            commands::rescan_root,
+            commands::shell_home_create_config,
+            commands::shell_home_edit_config,
+            commands::shell_home_open_window,
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building lector");
 
     app.run(|app_handle, event| {
         // ExitRequested fires before every window's Destroyed during ⌘Q; mark quitting so a

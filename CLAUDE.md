@@ -367,10 +367,18 @@ demand the signing key and break the keyless path.
 
 ## Generated scripts belong to shell-core
 
-`scripts/release.sh`, `scripts/gen-latest-json.sh`, and `scripts/install-app.sh` are
-**generated, git-ignored** — materialized by `src-tauri/build.rs` from the pinned shell-core
-rev. **Edit them in shell-core, never here**; a local edit is silently overwritten on the next
-build. The tracked `scripts/tooling.env` is the only per-app input they read.
+`scripts/release.sh`, `scripts/gen-latest-json.sh`, `scripts/install-app.sh`, and
+`scripts/launch-app.sh` are **generated, git-ignored** — materialized by `src-tauri/build.rs` from
+the pinned shell-core rev. **Edit them in shell-core, never here**; a local edit is silently
+overwritten on the next build. The tracked `scripts/tooling.env` is the only per-app input they read.
+
+- **`just deploy` launches via `scripts/launch-app.sh`, never a bare `open`.** `open` forwards the
+  *caller's* whole environment to the launched app (process parentage is clean — launchd — the
+  environment is not), so deploying from a terminal runs lector with that terminal's `TERM*`,
+  `GHOSTTY_*`, `TMUX*`, `SHELL` and any agent/tooling vars: an environment no Dock/Spotlight launch
+  ever reproduces, which makes bugs appear or vanish by launch method. `launch-app.sh` wraps `open`
+  in `env -i` so the app gets only the launchd GUI-session environment. Shared with warden +
+  curator; the script's header carries the full footgun.
 
 ## Deferred work
 

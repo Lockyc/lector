@@ -24,9 +24,9 @@ lector curates local documentation the same way.
 **Complete and functional end-to-end, and released.** The full app works: the config
 parser/validator/formatter, the `Servers` supervisor (one live `compositor serve` per open tab),
 project-tree root discovery, tab pop-out into detached windows, the sidebar chrome and its
-commands, content-webview link escape, native mouse side-button back/forward navigation, a
-determinate content-load progress bar, config hot-reload, and the `validate`/`fmt` CLI
-are all built and tested. The in-app minisign-signed updater is fully wired.
+commands, content-webview link escape, native mouse side-button back/forward navigation,
+keyboard tab navigation, a determinate content-load progress bar, config hot-reload, and the
+`validate`/`fmt` CLI are all built and tested. The in-app minisign-signed updater is fully wired.
 
 ## Install
 

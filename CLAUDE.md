@@ -111,9 +111,12 @@ lector also consumes the render/serve engine:
   points**, clamps every restore to the target monitor's work area, and never records geometry
   while a window is fullscreen or minimized (covers classic Split View; Sequoia's drag-to-edge
   *tiling* is not a fullscreen space, so a tiled window's ordinary bounds are still recorded,
-  correctly). The home surface and any popped-out tab window are excluded from save and restore
-  **structurally**, inside the module — `register_plugins`'s `skip_labels` is reserved for an
-  app's *own* transient windows, and lector passes `&[]` (it has none).
+  correctly). Only the home surface is excluded from save and restore **structurally**, inside the
+  module — `register_plugins`'s `skip_labels` is reserved for an app's *own* transient windows, and
+  lector passes `&[]` (it has none). **A popped-out tab's window is persisted like any other**,
+  keyed by its `shell-detach:` label; `detach_window_token` makes that label the tab's own
+  (dir-hash-derived, config-stable) label, so a re-popped tab reopens at the size and position it
+  was last left at rather than `DETACHED_DEFAULT_*`.
 
 All four are git dependencies, git-ignored/materialized, or `[patch]`-overridable for local dev
 — never vendor one in-tree.

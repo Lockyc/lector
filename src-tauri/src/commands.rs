@@ -478,14 +478,18 @@ pub fn pop_out_tab(
     // A content-webview label is already globally unique (`{window_id}:tab-hash`), so it doubles as
     // the detach token — mirrors curator's `detach_window_token`.
     let token = crate::detach_window_token(&label);
-    let birth_hole = crate::webviews::HoleRect {
-        x: 0.0,
-        y: crate::DETACH_BANNER_H,
-        width,
-        height: (height - crate::DETACH_BANNER_H).max(0.0),
-    };
     let label_for_birth = label.clone();
-    let build = shell_core::detach::open_detached(&app, &token, &spec, "lector", |win| {
+    let build = shell_core::detach::open_detached(&app, &token, &spec, "lector", |win, size| {
+        // `size` is the BUILT window's real size, handed in by `open_detached` — not the origin
+        // window's configured `width`/`height` that `spec` was built from. Geometry restores this
+        // tab's remembered size during `build()`, so those are stale for any tab popped out
+        // before, and a birth hole cut from them would sit visibly wrong for a frame.
+        let birth_hole = crate::webviews::HoleRect {
+            x: 0.0,
+            y: crate::DETACH_BANNER_H,
+            width: size.width,
+            height: (size.height - crate::DETACH_BANNER_H).max(0.0),
+        };
         let w = win.as_ref().window();
         // The detached window is never passed to `webviews::build_window`, so it has no HOLES
         // entry yet — seed one before docking content, or `show_on` would fall back to a

@@ -25,7 +25,16 @@
 //     unreachable; lector's `pop_out_tab` can genuinely fail, e.g. a `dir` that stopped existing).
 
 const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+// **Footgun: a bare `listen()` is app-wide, not window-scoped — so per-window events leaked to
+// every window.** The JS API registers a listener as `EventTarget::Any` unless given a target, and
+// Tauri's dispatch short-circuits an `Any` listener *past* the emit's target filter
+// (`match_any_or_filter` in tauri's event/listener.rs) — so `emit_to(<this chrome's label>, …)`
+// was delivered to every window's chrome regardless: ⌘1 cycled the tabs of BOTH windows at once,
+// and `close-tab` / `pop-out-tab` leaked the same way. Binding to this webview registers
+// `EventTarget::Webview { label }`, the only target the emit's `AnyLabel` filter narrows on. Every
+// per-window listener below must use this, not the raw `window.__TAURI__.event.listen`.
+const chromeWebview = window.__TAURI__.webview.getCurrentWebview();
+const listen = (event, handler) => chromeWebview.listen(event, handler);
 
 // ── Nav pill ─────────────────────────────────────────────────────────────────
 // compositor's page shell has a tree-nav, a TOC, and prev/next links, but prev/next is reading
@@ -281,7 +290,8 @@ listen("config-error", (event) => {
 });
 
 // The menu spine's ⌘W (Tab ▸ Close Tab): unloads whichever tab is active in THIS window. lib.rs
-// routes it via emit_to_focused_chrome, so only the focused window's chrome receives it.
+// routes it via emit_to_focused_chrome; the webview-scoped `listen` above is what makes that
+// targeting actually bind (see the footgun).
 listen("close-tab", () => {
   if (activeLabel) unloadTab(activeLabel);
 });
@@ -299,6 +309,12 @@ listen("nav-tab", (e) => {
 });
 listen("jump-tab", (e) => {
   if (sb) sb.selectByIndex(e.payload);
+});
+
+// Menu "Check for Updates…" → chrome-core checks now + announces (up-to-date / error / a banner).
+// lib.rs emits this; without the forward the menu item did nothing.
+listen("check-update", () => {
+  if (sb) sb.checkForUpdateNow();
 });
 
 mountChrome();

@@ -296,6 +296,20 @@ A plugin's permission can only be *named* if tauri-build's ACL discovery sees th
 `tauri-plugin-process` entries despite nothing here calling them. **Do not delete them as dead
 weight** — the reason and the silent-failure modes are on those entries in `src-tauri/Cargo.toml`.
 
+## Per-window events: scope BOTH sides, the emit target alone does nothing
+
+`emit_to_focused_chrome` (and the specific-label `emit_to` beside it in `lib.rs`) address a chrome
+by its webview label — but Tauri's dispatch short-circuits any listener registered as
+`EventTarget::Any` *past* the emit's target filter (`match_any_or_filter`, tauri
+`src/event/listener.rs`), and a bare JS `listen(event, handler)` registers exactly that.
+**Footgun: it looks scoped and isn't.** Until fixed, every window's chrome received every
+per-window event — ⌘1 cycled the tabs of *all* windows at once, and `close-tab` / `pop-out-tab`
+leaked the same way. `src/chrome.js` therefore binds its listeners to the chrome webview
+(`window.__TAURI__.webview.getCurrentWebview().listen`), registering
+`EventTarget::Webview { label }`, the one target the emit's `AnyLabel` filter narrows on. A new
+per-window listener must use that local `listen` wrapper, never the raw
+`window.__TAURI__.event.listen`. Ported from curator, which hit this first.
+
 ## Toolchain lockstep
 
 `rustup` picks a toolchain by walking up from the directory `cargo` runs in — never from what's

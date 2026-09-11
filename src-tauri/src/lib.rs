@@ -108,6 +108,10 @@ fn build_missing_windows(app: &tauri::AppHandle, cfg: &lector_config::Config) ->
 /// Emit an event to just the focused window's chrome sidebar — the menu spine's ⌘W (Close Tab)
 /// and Check for Updates… both act on whichever window has key focus. Modelled on curator's
 /// equivalent (the chrome is the window's main webview, so its label *is* the window id).
+///
+/// **This target only scopes anything because `chrome.js` binds its listeners to the chrome
+/// webview.** A JS `listen()` with no target registers `EventTarget::Any`, which tauri delivers to
+/// regardless of the label here — see the per-window-events footgun in CLAUDE.md.
 fn emit_to_focused_chrome<S: serde::Serialize + Clone>(
     app: &tauri::AppHandle,
     event: &str,
@@ -205,8 +209,9 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
 
     // Re-render the origin chrome so the returned row loses its ⤢ detached mark and reflects the new
     // active tab. `config-reloaded` drives the chrome's refresh() (a get_tabs re-fetch); emit_to
-    // targets only that window's chrome (lector's per-window emit scoping, `emit_to_focused_chrome`'s
-    // sibling for a specific label rather than the focused one). If the origin was just reopened its
+    // targets only that window's chrome (`emit_to_focused_chrome`'s sibling for a specific label
+    // rather than the focused one — and, like it, scoped only in concert with chrome.js's
+    // webview-bound listeners). If the origin was just reopened its
     // fresh mount already refreshes, so a missed emit self-corrects.
     let _ = app.emit_to(origin_wid.as_str(), "config-reloaded", ());
 }

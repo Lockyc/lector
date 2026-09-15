@@ -6,10 +6,10 @@ publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-dirs = "5"
+toml = "1.1"
+dirs = "6"
 # Shared house-style TOML formatter + colour parsing, shared with warden and curator. Pinned by rev —
 # the shared formatter must format identically in all three apps, so an unpinned dep floating forward
 # in only one repo would silently diverge `lector fmt` from its siblings. This rev MUST match
 # curator's and warden's; bump all three in lockstep.
-config-core = { git = "https://github.com/Lockyc/config-core", rev = "32da05722453a9b54eff59f567b5360fbfff5ff5" }
+config-core = { git = "https://github.com/Lockyc/config-core", rev = "e99ea215835d254db0e1ef88892eaeb33349b7c3" }

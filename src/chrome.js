@@ -8,8 +8,8 @@
 //     page on every edit, so a manual reload button would be redundant here — don't "restore" it.
 //   - No badge/notification machinery at all: docs don't notify, so `attention` is always `null`
 //     (there is no shim/sentinel layer here to feed it from).
-//   - No kill concept: `killable` is always `false`, `onKillClose` is omitted (chrome-core only
-//     renders the ☠ control when a callback is supplied).
+//   - No kill concept: `killable`/`suspendable` are always `false`, so no row ever arms the
+//     end-session confirm and `onSuspend`/`onDestroy` are omitted.
 //   - `onSelect`'s rejection is surfaced via `sb.setError(String(e))`, not swallowed. This is the
 //     app's only error channel for a missing repo: lector-config's `dir` validation deliberately
 //     only *warns* on a missing/non-existent dir (an un-cloned repo must not strand every other
@@ -215,9 +215,7 @@ async function mountChrome() {
         setSidebarWidth(width);
         reportRect();
       },
-      // onKillClose: unused — lector sets killable:false, so the component never invokes it, and
-      // omitting the callback is what keeps the ☠ control off the row entirely (capability-by-
-      // presence).
+      // onSuspend/onDestroy: omitted — lector sets neither killable nor suspendable, so no row arms.
     },
     {
       header: buildNavPill(),

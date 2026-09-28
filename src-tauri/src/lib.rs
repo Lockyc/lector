@@ -35,6 +35,11 @@ pub(crate) fn detach_window_token(tab_label: &str) -> String {
 /// one frame before `detach.html`'s own `set_hole_rect` lands and reports the exact hole.
 pub(crate) const DETACH_BANNER_H: f64 = 36.0;
 
+/// Window theme for a given `dark_mode` setting. `None` = follow the system.
+pub(crate) fn theme_for(dark_mode: bool) -> Option<tauri::Theme> {
+    dark_mode.then_some(tauri::Theme::Dark)
+}
+
 /// Print config-load warnings to stderr. Shared shape with `validate_cli`'s own printing (kept
 /// separate rather than factored together — that one also prints the resolved tab tree, this one
 /// only ever prints warnings).
@@ -45,8 +50,8 @@ fn log_config_warnings(warnings: &[lector_config::Warning]) {
 }
 
 /// Apply a freshly-loaded config to live state, on both the initial load and every hot-reload: log
-/// its warnings, install the app-global chrome settings, and run the shared [`reload::reconcile`]
-/// (tab-server reconciliation — the same path for launch-time eager-start and hot-reload). Callers
+/// its warnings, install the app-global chrome settings and every open window's theme, and run the
+/// shared [`reload::reconcile`] (tab-server reconciliation — the same path for launch-time eager-start and hot-reload). Callers
 /// that need more than this — launch's per-window `open_on_launch` selection, hot-reload's
 /// chrome-refresh event and format-on-save (which needs the raw source this function doesn't take)
 /// — do it themselves, after calling this.
@@ -57,7 +62,17 @@ fn apply_config(
 ) {
     log_config_warnings(warnings);
     let state = app.state::<commands::AppState>();
-    state.set_global(cfg.density, cfg.sidebar_drag, cfg.auto_update);
+    state.set_global(
+        cfg.density,
+        cfg.sidebar_drag,
+        cfg.auto_update,
+        cfg.dark_mode,
+    );
+    for m in state.window_meta() {
+        if let Some(win) = app.get_window(&m.id) {
+            let _ = win.set_theme(theme_for(cfg.dark_mode));
+        }
+    }
     reload::reconcile(&state, &cfg.windows);
 }
 

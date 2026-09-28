@@ -173,6 +173,9 @@ pub struct AppState {
     density: Mutex<Density>,
     /// Whole-app `sidebar_drag` from the config, set once at setup.
     sidebar_drag: AtomicBool,
+    /// Whole-app `dark_mode` from the config, re-set on every clean load; read when a window is
+    /// (re)built so a reopened window takes the current theme.
+    dark_mode: AtomicBool,
     /// Whole-app `auto_update` from the config, set once at setup.
     auto_update: AtomicBool,
     /// Every configured window's fixed identity (see [`WindowMeta`]), for the menu spine's Window
@@ -197,6 +200,7 @@ impl AppState {
             colours: Mutex::new(HashMap::new()),
             density: Mutex::new(Density::default()),
             sidebar_drag: AtomicBool::new(true),
+            dark_mode: AtomicBool::new(false),
             auto_update: AtomicBool::new(true),
             window_meta: Mutex::new(Vec::new()),
             detached: Mutex::new(HashMap::new()),
@@ -291,10 +295,21 @@ impl AppState {
             .flatten()
     }
 
-    pub fn set_global(&self, density: Density, sidebar_drag: bool, auto_update: bool) {
+    pub fn set_global(
+        &self,
+        density: Density,
+        sidebar_drag: bool,
+        auto_update: bool,
+        dark_mode: bool,
+    ) {
         *self.density.lock().expect("density lock") = density;
         self.sidebar_drag.store(sidebar_drag, Ordering::Relaxed);
         self.auto_update.store(auto_update, Ordering::Relaxed);
+        self.dark_mode.store(dark_mode, Ordering::Relaxed);
+    }
+
+    pub fn dark_mode(&self) -> bool {
+        self.dark_mode.load(Ordering::Relaxed)
     }
 
     /// Every window built so far, in build order. Clones — callers get a snapshot, never a lock

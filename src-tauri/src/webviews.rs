@@ -68,6 +68,9 @@ pub fn build_window(
             .title_bar_style(TitleBarStyle::Overlay)
             .build()?;
     let window = webview_window.as_ref().window();
+    window.set_theme(crate::theme_for(
+        app.state::<crate::commands::AppState>().dark_mode(),
+    ))?;
 
     HOLES
         .lock()

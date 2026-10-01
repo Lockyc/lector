@@ -363,9 +363,9 @@ curator's and warden's. Releases are notarized `.app` bundles with an in-app min
 updater (`tauri-plugin-updater`), mirroring curator's and warden's release shape: bump the
 version, tag `v<version>`, fast-forward `main`, publish a GitHub release with notes, then attach
 the notarized artifacts via `just release` (`scripts/release.sh`, generated from shell-core,
-parameterized by the tracked `scripts/tooling.env`). CI (`.github/workflows/ci.yml`) runs
-`just gate` on pushes to `main` (releases) and PRs; `just gate` locally is the check that
-runs per change — confirm it's green before tagging.
+parameterized by the tracked `scripts/tooling.env`). No CI: lector
+ships on macOS only, so the local `just gate` is the check — run it per change and green before
+tagging.
 
 **What `just release` needs from the build environment** (it is env-driven, and refuses to run
 without them): `TAURI_SIGNING_PRIVATE_KEY` — the **contents** of the updater key file, conventionally

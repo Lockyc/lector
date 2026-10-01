@@ -5,6 +5,10 @@ status  = "active"
 tags    = ["docs", "tauri", "macos", "markdown", "live-reload"]
 stack   = ["rust", "tauri", "javascript"]
 
+[fleet]
+exempt      = ["ci"]
+exempt_note = "macOS-only: the local `just gate` covers the one platform it ships on"
+
 [github]
 topics_extra = ["documentation"]
 

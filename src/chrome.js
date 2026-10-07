@@ -298,6 +298,10 @@ listen("close-tab", () => {
 listen("pop-out-tab", () => {
   if (activeLabel) popOutTab(activeLabel);
 });
+// ⌘⇧F (shell-core's Find in Sidebar): lib.rs has already made this webview the key view.
+listen("find-in-sidebar", () => {
+  if (sb) sb.focusSearch();
+});
 
 // Keyboard tab navigation (Tab menu): ⌘⇧[ / ⌘⇧] cycle, ⌘1–9 jump to a position — and, under
 // `tab_digit_keys = "cycle"`, ⌘1 / ⌘2 arrive here as the same nav-tab ±1. Cycling spans ALL tabs

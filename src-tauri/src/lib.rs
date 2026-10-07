@@ -309,6 +309,7 @@ fn install_app_menu(
         .separator()
         .item(&spine.close_tab)
         .item(&spine.pop_out_tab)
+        .item(&spine.find_in_sidebar)
         .separator();
     for it in &nav.jumps {
         tab_menu = tab_menu.item(it);
@@ -424,6 +425,17 @@ pub fn run() {
                     // focused window's chrome, the same per-window emit pattern as close-tab).
                     shell_core::menu::ids::POP_OUT_TAB => {
                         emit_to_focused_chrome(app, "pop-out-tab", ())
+                    }
+                    // ⌘⇧F: the content webview may hold first responder, so make the chrome (the
+                    // window's main webview, same label) the key view before it focuses its field.
+                    shell_core::menu::ids::FIND_IN_SIDEBAR => {
+                        if let Some(chrome) = app
+                            .get_focused_window()
+                            .and_then(|w| app.get_webview(w.label()))
+                        {
+                            let _ = chrome.set_focus();
+                        }
+                        emit_to_focused_chrome(app, "find-in-sidebar", ())
                     }
                     shell_core::menu::ids::CLOSE_WINDOW => {
                         if let Some(win) = app.get_focused_window() {

@@ -69,6 +69,9 @@ build from source.
   [compositor](https://github.com/Lockyc/compositor) `serve` loop on an ephemeral loopback port
   and points the tab's webview at it; the tab's title bar tracks whether that server is live.
   **⌘W** unloads the active tab, stopping its server.
+- **Sidebar search** — the field above the tab list narrows it as you type, matching tab titles,
+  folder paths and group names. **⌘⇧F** jumps into it; **↑**/**↓** pick a match, **Enter** opens
+  it, **Esc** clears the search.
 - **Pop-out tabs** — **⌘⇧O** (or the pop-out icon on a row's letter tile) moves the active tab
   into its own window. Its server keeps running across the hop; closing the window returns the
   tab to where it came from.

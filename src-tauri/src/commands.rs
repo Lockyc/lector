@@ -490,6 +490,7 @@ pub fn pop_out_tab(
         width,
         height,
         panes: vec![],
+        pane_band: None,
     };
     // A content-webview label is already globally unique (`{window_id}:tab-hash`), so it doubles as
     // the detach token — mirrors curator's `detach_window_token`.

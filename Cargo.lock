@@ -2184,7 +2184,7 @@ dependencies = [
 
 [[package]]
 name = "lector"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "chrome-core",

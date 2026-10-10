@@ -369,8 +369,11 @@ pub fn select(app: &tauri::AppHandle, state: &AppState, label: &str) -> Result<(
 }
 
 /// The `#[tauri::command]` wrapper around [`select`] — the caller surfaces a start failure via the
-/// chrome's setError.
-#[tauri::command]
+/// chrome's setError. `async` so it runs off the main thread: a cold start renders the whole repo
+/// (hundreds of ms), and a sync command would freeze every window for that long. Tauri's window and
+/// webview APIs marshal to the main thread themselves. `pop_out_tab` and `rescan_root` (a walk of
+/// every root) are `async` for the same reason.
+#[tauri::command(async)]
 pub fn select_tab(
     label: String,
     app: tauri::AppHandle,
@@ -436,7 +439,7 @@ pub fn unload_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, 
 /// must be free for the detached window's copy) but its **server is never stopped** here — see
 /// [`crate::webviews::close`] (webview only) vs [`Servers::stop`] (this command touches neither the
 /// latter nor [`AppState::unload`], which calls it).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pop_out_tab(
     label: String,
     app: tauri::AppHandle,
@@ -758,7 +761,7 @@ pub fn shell_home_open_window(id: String, app: tauri::AppHandle) {
 /// `config-reloaded` emit drives each window's `refresh()`. On a config that now fails to parse,
 /// keeps last-good and surfaces `config-error`, exactly like the config file watcher in `lib.rs`'s
 /// `run()`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rescan_root(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
     use tauri::Emitter;
     let path = lector_config::resolve_config_path();

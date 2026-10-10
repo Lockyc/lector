@@ -13,7 +13,8 @@
 //! `is_own_origin` gates every navigation in a content webview's `on_navigation`: only a URL whose
 //! scheme, host, AND port all match this tab's own `127.0.0.1:{port}` stays in the webview;
 //! anything else — including *another tab's* loopback port, which is still loopback but would
-//! silently show a different repo's site inside this tab — opens in the system browser instead.
+//! silently show a different repo's site inside this tab — is cancelled, and handed to the system
+//! browser only when [`escapes_to_browser`] allows its scheme.
 
 use tauri::webview::WebviewBuilder;
 use tauri::{
@@ -124,6 +125,14 @@ fn is_on_port(current: Option<&Url>, port: u16) -> bool {
     current.is_some_and(|u| is_own_origin(u.as_str(), port))
 }
 
+/// True iff an off-origin `url` may be handed to the system's default handler: `http`, `https` and
+/// `mailto` only. compositor renders a doc's raw HTML, so any page can navigate without a user
+/// gesture, and `open` launches whatever a `file://` app bundle, `smb://` share or custom scheme
+/// names — every other scheme is dropped.
+fn escapes_to_browser(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "mailto")
+}
+
 /// Hand a URL to the macOS default handler (the user's default browser). Side-effecting; not
 /// unit-tested — mirrors curator's `escape::escape_to_default_browser`.
 fn open_in_system_browser(url: &str) {
@@ -179,7 +188,11 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
                 if is_own_origin(target.as_str(), port) {
                     true
                 } else {
-                    open_in_system_browser(target.as_str());
+                    if escapes_to_browser(target) {
+                        open_in_system_browser(target.as_str());
+                    } else {
+                        eprintln!("blocked navigation to {target}");
+                    }
                     false
                 }
             });
@@ -342,5 +355,26 @@ mod tests {
         // A lookalike host must not pass a naive prefix check.
         assert!(!is_own_origin("http://127.0.0.1.evil.test/", 8080));
         assert!(!is_own_origin("http://127.0.0.1:8080.evil.test/", 8080));
+
+        // Other schemes are never this tab's origin either.
+        assert!(!is_own_origin("file:///Applications/Calculator.app", 8080));
+        assert!(!is_own_origin("mailto:a@example.test", 8080));
+    }
+
+    #[test]
+    fn only_web_and_mail_links_escape_to_the_system_handler() {
+        let escapes = |u: &str| escapes_to_browser(&u.parse::<Url>().unwrap());
+        assert!(escapes("https://github.com/lockyc/lector"));
+        assert!(escapes("http://example.test/"));
+        assert!(escapes("mailto:a@example.test"));
+
+        // `open` would launch an app, mount a share or fire a URL-scheme handler.
+        assert!(!escapes("file:///Applications/Calculator.app"));
+        assert!(!escapes("smb://host.example.test/share"));
+        assert!(!escapes(
+            "x-apple.systempreferences:com.apple.preference.security"
+        ));
+        assert!(!escapes("javascript:alert(1)"));
+        assert!(!escapes("data:text/html,hi"));
     }
 }

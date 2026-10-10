@@ -67,7 +67,7 @@ build from source.
   folder tree with a `⟳` rescan button. Discovered tabs are lazy — their server starts on select.
 - **One tab, one live server.** Selecting a tab starts a
   [compositor](https://github.com/Lockyc/compositor) `serve` loop on an ephemeral loopback port
-  and points the tab's webview at it; the tab's title bar tracks whether that server is live.
+  and points the tab's webview at it; the tab's sidebar dot tracks whether that server is live.
   **⌘W** unloads the active tab, stopping its server.
 - **Sidebar search** — the field above the tab list narrows it as you type, matching tab titles,
   folder paths and group names. **⌘⇧F** jumps into it; **↑**/**↓** pick a match, **Enter** opens

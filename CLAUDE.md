@@ -131,7 +131,7 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
   shared spine (`shell_core::menu::build_spine`); lector's own **Tab** submenu is built entirely
   from shell-core pieces too — `shell_core::menu::build_tab_nav` (⌘⇧[ / ⌘⇧] cycle, ⌘1–9 jump, and
   the ⌘1/⌘2 cycle aliases in `cycle` mode — see *Keyboard tab navigation* below) around the spine's
-  `Close Tab` (⌘W) and `Pop Out Tab` (⌘⇧O). curator's Tab submenu additionally has Reload Tab /
+  `Close Tab` (⌘W), `Pop Out Tab` (⌘⇧O) and `Find in Sidebar` (⌘⇧F). curator's Tab submenu additionally has Reload Tab /
   Reset All Tabs / Open Developer Tools; warden's has Reopen Last Closed — none of *those* map onto
   lector: **compositor's file watcher already live-reloads every open tab on save**, so a manual
   "Reload Tab" item would be a no-op button; there is no per-tab "session" to reset (a compositor

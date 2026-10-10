@@ -318,7 +318,8 @@ pub(crate) fn reload_now(app: &tauri::AppHandle) {
 
 /// Build and install the app menu: the shared spine (App/Config/Window) plus lector's own Tab
 /// submenu — shell-core's tab-nav block (⌘⇧[ / ⌘⇧] , ⌘1–9 jumps, and the ⌘1/⌘2 cycle aliases
-/// when `mode` asks for them) around the spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O).
+/// when `mode` asks for them) around the spine's Close Tab (⌘W), Pop Out Tab (⌘⇧O) and Find in
+/// Sidebar (⌘⇧F).
 ///
 /// Called at setup **and again on every clean hot-reload**, so a `tab_digit_keys` flip applies
 /// without a relaunch — matching warden and curator.

@@ -13,8 +13,8 @@ recorded here so it isn't lost. Remove an item when it's done.
 
 ## Tab submenu — more per-tab actions
 
-lector's **Tab** submenu currently holds the family's `Close Tab` (⌘W), `Pop Out Tab` (⌘⇧O), and
-the shared keyboard tab-nav block (⌘⇧[ / ⌘⇧] , ⌘1–9). Other tab-scoped actions are natural next
+lector's **Tab** submenu currently holds the family's `Close Tab` (⌘W), `Pop Out Tab` (⌘⇧O),
+`Find in Sidebar` (⌘⇧F), and the shared keyboard tab-nav block (⌘⇧[ / ⌘⇧] , ⌘1–9). Other tab-scoped actions are natural next
 additions, deferred only because nothing yet needs them:
 
 - **Reveal repo dir in Finder** — the doc repo backing the active tab (`dir`).

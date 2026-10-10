@@ -4,7 +4,7 @@
 //! webviews composite ABOVE it, filling the content hole to the right of the sidebar. A *visited*
 //! tab stays live in the background: its server keeps running and its content webview stays built
 //! but hidden (`raise_only` below only hides a webview, it never closes one) — only the *active* tab
-//! is shown. Switching is show-this-one-hide-the-rest; only `unload_tab` (`commands.rs`) actually
+//! is shown. Switching is show-this-one-hide-the-rest; unloading (`unload_tab`, `commands.rs`)
 //! closes a webview, and it promotes the nearest still-live neighbour rather than leaving the empty
 //! background, unless this was the last live tab.
 //!
@@ -160,13 +160,19 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
         .parse()
         .map_err(|e| format!("{e}"))?;
 
-    if let Some(wv) = window.get_webview(label) {
-        // A tab built earlier and now hidden is only re-shown — navigating it would throw away its
-        // reading position and in-page history on every switch (`home_tab` is the go-to-root path).
-        if !is_on_port(wv.url().ok().as_ref(), port) {
-            wv.navigate(url).map_err(|e| e.to_string())?;
+    // A tab built earlier and now hidden is only re-shown — navigating it would throw away its
+    // reading position and in-page history on every switch (`home_tab` is the go-to-root path). One
+    // on another port (its server restarted) is rebuilt, not navigated: its `on_navigation` gate
+    // is bound to the port it was born on and would escape its own new site to the browser.
+    let existing = window.get_webview(label);
+    let reuse = existing
+        .as_ref()
+        .is_some_and(|wv| is_on_port(wv.url().ok().as_ref(), port));
+    if !reuse {
+        if let Some(stale) = existing {
+            stale.close().map_err(|e| e.to_string())?;
         }
-    } else {
+
         let hole = hole_for(window.label());
         let builder =
             WebviewBuilder::new(label, WebviewUrl::External(url)).on_navigation(move |target| {

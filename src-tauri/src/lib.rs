@@ -83,9 +83,8 @@ fn apply_config(
 /// needs `apply_config` to have populated tab state first, and must not re-select on top of an
 /// already-open window's current tab) knows which ones are new.
 ///
-/// Used by both `run()`'s setup (every window is new there) and [`reload_now`] (only "Create a
-/// starter config" cold-starts a window this way — the config-file watcher's hot-reload never
-/// rebuilds the window set, only tabs, via `reload::reconcile`).
+/// Used by `run()`'s setup (every window is new there), [`reload_now`] and the config-file
+/// watcher's clean hot-reload (a `[[window]]` added, or retitled — a new id — mid-session).
 fn build_missing_windows(app: &tauri::AppHandle, cfg: &lector_config::Config) -> Vec<String> {
     let state = app.state::<commands::AppState>();
     let mut meta = state.window_meta();
@@ -118,6 +117,26 @@ fn build_missing_windows(app: &tauri::AppHandle, cfg: &lector_config::Config) ->
     }
     state.set_window_meta(meta);
     built
+}
+
+/// Select each newly-`built` window's startup tab (`WindowConfig::startup_label` — the first
+/// load_on_open tab by default, or whatever `open_on_launch` overrides to) exactly the way a click
+/// would (`commands::select`). Windows that were already open keep their current tab. A failure
+/// (e.g. the tab's dir doesn't exist yet) just stays cold. Runs after `apply_config`, which
+/// installs the views `select` resolves.
+fn select_startup_tabs(app: &tauri::AppHandle, cfg: &lector_config::Config, built: &[String]) {
+    let state = app.state::<commands::AppState>();
+    for win_cfg in &cfg.windows {
+        let wid = lector_config::identity::window_id(&win_cfg.title);
+        if !built.contains(&wid) {
+            continue;
+        }
+        if let Some(label) = win_cfg.startup_label() {
+            if let Err(e) = commands::select(app, &state, &label) {
+                eprintln!("startup selection failed for {label:?}: {e}");
+            }
+        }
+    }
 }
 
 /// Emit an event to just the focused window's chrome sidebar — the menu spine's ⌘W (Close Tab)
@@ -238,9 +257,9 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
 /// selection on exactly the newly-built windows (mirroring `run()`'s setup), and reconciles the
 /// home surface — which closes it, since a real window now exists.
 ///
-/// Deliberately NOT reused by the config-file watcher: that path already has its own bookkeeping
-/// (format-on-save echo suppression, per-reload event emission) built around windows that already
-/// exist; this one is specifically for windows that don't.
+/// Not reused by the config-file watcher, which has its own bookkeeping (format-on-save echo
+/// suppression, per-reload event emission) around the same `build_missing_windows` +
+/// `select_startup_tabs` steps.
 pub(crate) fn reload_now(app: &tauri::AppHandle) {
     let path = lector_config::resolve_config_path();
     let (cfg, warnings) = match lector_config::load_config(&path) {
@@ -253,20 +272,9 @@ pub(crate) fn reload_now(app: &tauri::AppHandle) {
 
     let built = build_missing_windows(app, &cfg);
     apply_config(app, &cfg, &warnings);
+    select_startup_tabs(app, &cfg, &built);
 
     let state = app.state::<commands::AppState>();
-    for win_cfg in &cfg.windows {
-        let wid = lector_config::identity::window_id(&win_cfg.title);
-        if !built.contains(&wid) {
-            continue;
-        }
-        if let Some(label) = win_cfg.startup_label() {
-            if let Err(e) = commands::select(app, &state, &label) {
-                eprintln!("startup selection failed for {label:?}: {e}");
-            }
-        }
-    }
-
     let meta = state.window_meta();
     let entries = reload::window_entries(app, &meta);
     // Rebuild the app menu here too, same as the config-file watcher's reload branch — this is
@@ -359,23 +367,8 @@ pub fn run() {
                 win.get_webview(&label)
             });
 
-            // Launch selection (`WindowConfig::startup_label` — the first load_on_open tab by default,
-            // or whatever `open_on_launch` overrides to): select it exactly the way a click would
-            // (`commands::select` — start-if-cold, show, mark active), never a shadow copy of that
-            // logic. A failure (e.g. the tab's dir doesn't exist yet) just stays cold; it isn't fatal
-            // to launch.
+            select_startup_tabs(app.handle(), &cfg, &built);
             let state = app.state::<commands::AppState>();
-            for win_cfg in &cfg.windows {
-                let wid = lector_config::identity::window_id(&win_cfg.title);
-                if !built.contains(&wid) {
-                    continue;
-                }
-                if let Some(label) = win_cfg.startup_label() {
-                    if let Err(e) = commands::select(app.handle(), &state, &label) {
-                        eprintln!("startup selection failed for {label:?}: {e}");
-                    }
-                }
-            }
 
             // The menu spine: App/Config/Window are shared (shell-core), Tab is lector's own — see
             // `install_app_menu`'s doc comment for what it holds and why it's rebuilt on every
@@ -491,7 +484,11 @@ pub fn run() {
                         } else {
                             None
                         };
+                        // A `[[window]]` added (or retitled) mid-session is built live, like a
+                        // launch-time one, and gets its startup tab.
+                        let built = build_missing_windows(&app_handle, &new_cfg);
                         apply_config(&app_handle, &new_cfg, &warnings);
+                        select_startup_tabs(&app_handle, &new_cfg, &built);
                         let state = app_handle.state::<commands::AppState>();
                         // Every window built so far, at launch or later (a starter config).
                         for m in state.window_meta() {

@@ -115,8 +115,8 @@ pub fn tab_dtos(
 
 /// A configured window's fixed identity — enough to rebuild it after the user closes it (the
 /// Window menu's reopen path) or to describe it to the menu spine / home surface. `id`/`title`/
-/// `colour` never change after launch (window blocks aren't added/removed by hot-reload — only
-/// tabs are, via `reload::reconcile`); `width`/`height` are its *initial* size, reused verbatim on
+/// `colour` are fixed once the window is built (hot-reload builds a newly-added window but never
+/// edits or removes an existing entry); `width`/`height` are its *initial* size, reused verbatim on
 /// a rebuild since Tauri doesn't remember a closed window's last size once it's gone.
 #[derive(Debug, Clone)]
 pub struct WindowMeta {
@@ -180,8 +180,8 @@ pub struct AppState {
     auto_update: AtomicBool,
     /// Every configured window's fixed identity (see [`WindowMeta`]), for the menu spine's Window
     /// submenu and reopening a closed window from it. Grows as `lib.rs` builds windows (at launch,
-    /// and later via `reload_now`); never shrinks — a window that's closed stays in this list so it
-    /// can be rebuilt.
+    /// via `reload_now`, and on a clean hot-reload); never shrinks — a window that's closed stays in
+    /// this list so it can be rebuilt.
     window_meta: Mutex<Vec<WindowMeta>>,
     /// Tabs currently popped out into their own detached window, keyed by the detached window's
     /// Tauri label ([`shell_core::detach::detached_label`]). **Separate from `window_meta`** so

@@ -118,6 +118,12 @@ fn is_own_origin(url: &str, port: u16) -> bool {
     authority == format!("127.0.0.1:{port}")
 }
 
+/// True iff an existing content webview, currently on `current` (`None` when the URL can't be
+/// read), is already showing this tab's site on `port` — so `show_in` can re-show it as-is.
+fn is_on_port(current: Option<&Url>, port: u16) -> bool {
+    current.is_some_and(|u| is_own_origin(u.as_str(), port))
+}
+
 /// Hand a URL to the macOS default handler (the user's default browser). Side-effecting; not
 /// unit-tested — mirrors curator's `escape::escape_to_default_browser`.
 fn open_in_system_browser(url: &str) {
@@ -141,7 +147,7 @@ fn accent_rgba(colour: Option<&str>) -> (f64, f64, f64, f64) {
         .unwrap_or((0.039, 0.518, 1.0, 1.0))
 }
 
-/// Create-or-navigate `label`'s content webview to `http://127.0.0.1:{port}/` inside `window`, then
+/// Create `label`'s content webview on `http://127.0.0.1:{port}/` in `window` (or reuse it), then
 /// show it and hide every other tab in that same window. This is where a cold tab's webview is
 /// born — shared core for both [`show`] (the normal case, where `window` is derived from `label`'s
 /// own `{window_id}:tab-hash` prefix) and [`show_on`] (a detached window, whose Tauri label has no
@@ -155,7 +161,11 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
         .map_err(|e| format!("{e}"))?;
 
     if let Some(wv) = window.get_webview(label) {
-        wv.navigate(url).map_err(|e| e.to_string())?;
+        // A tab built earlier and now hidden is only re-shown — navigating it would throw away its
+        // reading position and in-page history on every switch (`home_tab` is the go-to-root path).
+        if !is_on_port(wv.url().ok().as_ref(), port) {
+            wv.navigate(url).map_err(|e| e.to_string())?;
+        }
     } else {
         let hole = hole_for(window.label());
         let builder =
@@ -189,7 +199,7 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
     raise_only(window, label)
 }
 
-/// Create-or-navigate `label`'s content webview to `http://127.0.0.1:{port}/`, then show it and
+/// Create `label`'s content webview on `http://127.0.0.1:{port}/` (or reuse it), then show it and
 /// hide every other tab in the window. `window` is resolved from `label`'s own `{window_id}:…`
 /// prefix — the normal (origin-window) case, including a redocked tab (its label's prefix is
 /// always its origin window's id).
@@ -291,6 +301,17 @@ mod tests {
         let h = hole_for("no-such-window-ever");
         assert_eq!(h.x, CHROME_W);
         assert_eq!(h.width, 0.0);
+    }
+
+    #[test]
+    fn an_existing_webview_is_reused_only_on_its_own_port() {
+        let deep: Url = "http://127.0.0.1:8080/guides/x.html#y".parse().unwrap();
+        assert!(
+            is_on_port(Some(&deep), 8080),
+            "a deep page on this port is kept, not reset to /"
+        );
+        assert!(!is_on_port(Some(&deep), 9090), "a stale port is not reused");
+        assert!(!is_on_port(None, 8080), "an unreadable URL is not reused");
     }
 
     #[test]

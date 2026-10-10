@@ -271,7 +271,7 @@ impl AppState {
 
     /// Clear this window's active tab iff it currently points at `label`. No-op when a different
     /// tab (or none) is active — unloading a tab that isn't showing must not disturb the one that is.
-    fn clear_active_if(&self, label: &str) {
+    pub(crate) fn clear_active_if(&self, label: &str) {
         let window = label.split(':').next().unwrap_or_default();
         let mut active = self.active.lock().expect("active lock");
         if active.get(window).map(String::as_str) == Some(label) {

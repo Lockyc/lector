@@ -178,16 +178,28 @@ fn emit_to_focused_chrome<S: serde::Serialize + Clone>(
 /// (`shell_home_open_window`): focus `window_id` if it's already open, otherwise rebuild it from
 /// its stored [`commands::WindowMeta`] (present iff `window_id` was ever built this run — the
 /// spine and the home surface only ever offer ids that came from that same list, so a lookup miss
-/// here would mean one of them drifted out of sync with it). Reconciles the home surface afterwards
-/// so it closes now that a real window exists again.
+/// here would mean one of them drifted out of sync with it). A rebuilt window re-shows the tab it
+/// last had active — closing the window destroyed that tab's webview but not its `active` mark or
+/// server — or, if that fails, clears the mark so the sidebar doesn't highlight an empty hole.
+/// Reconciles the home surface afterwards so it closes now that a real window exists again.
 fn open_or_focus_window(app: &tauri::AppHandle, window_id: &str) {
     if let Some(win) = app.get_window(window_id) {
         let _ = win.set_focus();
         return;
     }
-    let meta = app.state::<commands::AppState>().window_meta();
+    let state = app.state::<commands::AppState>();
+    let meta = state.window_meta();
     if let Some(m) = meta.iter().find(|m| m.id == window_id) {
-        let _ = webviews::build_window(app, &m.id, &m.title, m.width, m.height);
+        if webviews::build_window(app, &m.id, &m.title, m.width, m.height).is_ok() {
+            if let Some(label) = state.active_for(window_id) {
+                // A popped-out tab's webview label is taken by its detached window.
+                if state.detached_tab_labels().contains(&label)
+                    || commands::select(app, &state, &label).is_err()
+                {
+                    state.clear_active_if(&label);
+                }
+            }
+        }
     }
     let entries = reload::window_entries(app, &meta);
     let path = lector_config::resolve_config_path();
@@ -203,9 +215,10 @@ fn open_or_focus_window(app: &tauri::AppHandle, window_id: &str) {
 ///
 /// Order matters: the origin+tab+port are read (not removed) first, so that if the origin window was
 /// closed while the tab was out, [`open_or_focus_window`] reopens it while the tab is STILL in
-/// `AppState::detached` — harmless, since reopening a window never touches `detached` or recreates
-/// any content webview on its own (see that function's doc: it only rebuilds the window shell).
-/// Only then is the bookkeeping removed and the webview recreated on the origin.
+/// `AppState::detached` — harmless, since reopening a window never touches `detached` and only
+/// re-shows the origin's own active tab, which can't be the popped-out one (`pop_out_tab` clears
+/// it). Only then is the bookkeeping removed and the webview recreated on the origin, which then
+/// becomes active.
 pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
     // ⌘Q teardown: `RunEvent::ExitRequested` fires before every window's `Destroyed`. Don't reopen
     // an origin or recreate a webview mid-quit — everything is being torn down, and the servers are

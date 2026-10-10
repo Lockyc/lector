@@ -50,8 +50,9 @@ fn log_config_warnings(warnings: &[lector_config::Warning]) {
 }
 
 /// Apply a freshly-loaded config to live state, on both the initial load and every hot-reload: log
-/// its warnings, install the app-global chrome settings and every open window's theme, and run the
-/// shared [`reload::reconcile`] (tab-server reconciliation — the same path for launch-time eager-start and hot-reload). Callers
+/// its warnings, install the app-global chrome settings and every open window's theme, run the
+/// shared [`reload::reconcile`] (tab-server reconciliation — the same path for launch-time
+/// eager-start and hot-reload), and drop the webviews and active marks of tabs it removed. Callers
 /// that need more than this — launch's per-window `open_on_launch` selection, hot-reload's
 /// chrome-refresh event and format-on-save (which needs the raw source this function doesn't take)
 /// — do it themselves, after calling this.
@@ -73,7 +74,24 @@ fn apply_config(
             let _ = win.set_theme(theme_for(cfg.dark_mode));
         }
     }
-    reload::reconcile(&state, &cfg.windows);
+    let views = reload::reconcile(&state, &cfg.windows);
+
+    // A tab gone from the config (or relabelled by a `dir` change) has just lost its server: close
+    // its content webview and clear it as active, so neither a dead page nor an unhighlighted
+    // selection is left behind. A popped-out tab lives in its detached window and is kept.
+    let mut keep: std::collections::HashSet<String> = views.into_iter().map(|v| v.label).collect();
+    keep.extend(state.detached_tab_labels());
+    state.retain_active(&keep);
+    for m in state.window_meta() {
+        let Some(win) = app.get_window(&m.id) else {
+            continue;
+        };
+        for wv in win.webviews() {
+            if wv.label() != win.label() && !keep.contains(wv.label()) {
+                let _ = wv.close();
+            }
+        }
+    }
 }
 
 /// Build every window in `cfg.windows` that doesn't already have a live Tauri window, installing

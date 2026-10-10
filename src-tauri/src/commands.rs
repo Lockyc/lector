@@ -279,6 +279,15 @@ impl AppState {
         }
     }
 
+    /// Clear every window's active tab whose label isn't in `keep` (the tabs that still exist after
+    /// a reload) — a removed tab must not stay highlighted, or route a re-click to `home_tab`.
+    pub fn retain_active(&self, keep: &HashSet<String>) {
+        self.active
+            .lock()
+            .expect("active lock")
+            .retain(|_, label| keep.contains(label));
+    }
+
     pub fn set_colour(&self, window_id: &str, colour: Option<String>) {
         self.colours
             .lock()
@@ -1065,6 +1074,23 @@ mod tests {
             Some("w1:tab-b"),
             "unloading a non-active tab must not clear or change a different tab's active state"
         );
+    }
+
+    #[test]
+    fn retain_active_clears_only_tabs_that_no_longer_exist() {
+        let state = AppState::new();
+        state.set_active("w1:tab-gone");
+        state.set_active("w2:tab-kept");
+
+        let keep: HashSet<String> = ["w2:tab-kept".to_string()].into_iter().collect();
+        state.retain_active(&keep);
+
+        assert_eq!(
+            state.active_for("w1"),
+            None,
+            "a removed tab must not stay active"
+        );
+        assert_eq!(state.active_for("w2").as_deref(), Some("w2:tab-kept"));
     }
 
     fn view(label: &str) -> lector_config::TabView {

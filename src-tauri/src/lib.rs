@@ -394,7 +394,7 @@ pub fn run() {
                 let win = mouse_nav_handle.get_focused_window()?;
                 let label = mouse_nav_handle
                     .state::<commands::AppState>()
-                    .active_for(win.label())?;
+                    .shown_tab(win.label())?;
                 win.get_webview(&label)
             });
 

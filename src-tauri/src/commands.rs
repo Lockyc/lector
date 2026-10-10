@@ -250,6 +250,19 @@ impl AppState {
             .cloned()
     }
 
+    /// The tab whose content webview a window shows, by the window's Tauri label: a real window's
+    /// active tab, or the tab a detached (`shell-detach:…`) window hosts. Mouse side-button
+    /// back/forward acts on this.
+    pub fn shown_tab(&self, window_label: &str) -> Option<String> {
+        self.active_for(window_label).or_else(|| {
+            self.detached
+                .lock()
+                .expect("detached lock")
+                .get(window_label)
+                .map(|d| d.tab_label.clone())
+        })
+    }
+
     /// Stop `label`'s server and, if it was its window's active tab, clear active for that window.
     /// This is the state half of `unload_tab` — split out from the `#[tauri::command]` wrapper so it
     /// needs no `AppHandle`/webview and is directly unit-testable.
@@ -1094,6 +1107,27 @@ mod tests {
             "a removed tab must not stay active"
         );
         assert_eq!(state.active_for("w2").as_deref(), Some("w2:tab-kept"));
+    }
+
+    #[test]
+    fn shown_tab_covers_real_and_detached_windows() {
+        let state = AppState::new();
+        state.set_active("w1:tab-a");
+        state.detached.lock().unwrap().insert(
+            "shell-detach:w1:tab-b".into(),
+            LectorDetached {
+                origin_wid: "w1".into(),
+                tab_label: "w1:tab-b".into(),
+                port: 1234,
+            },
+        );
+        assert_eq!(state.shown_tab("w1").as_deref(), Some("w1:tab-a"));
+        assert_eq!(
+            state.shown_tab("shell-detach:w1:tab-b").as_deref(),
+            Some("w1:tab-b"),
+            "a popped-out window resolves to the tab it hosts"
+        );
+        assert_eq!(state.shown_tab("w2"), None);
     }
 
     fn view(label: &str) -> lector_config::TabView {

@@ -343,13 +343,7 @@ pub fn run() {
 
             // Build every configured window (+ its accent colour) first, so the reconcile below —
             // and the `open_on_launch` selection after it — have somewhere to point a webview at.
-            // Every window is new at launch, so `built` below is always all of `window_ids`.
             let built = build_missing_windows(app.handle(), &cfg);
-            let window_ids: Vec<String> = cfg
-                .windows
-                .iter()
-                .map(|w| lector_config::identity::window_id(&w.title))
-                .collect();
 
             apply_config(app.handle(), &cfg, &warnings);
 
@@ -498,10 +492,11 @@ pub fn run() {
                             None
                         };
                         apply_config(&app_handle, &new_cfg, &warnings);
-                        for wid in &window_ids {
-                            let _ = app_handle.emit_to(wid.as_str(), "config-reloaded", ());
-                        }
                         let state = app_handle.state::<commands::AppState>();
+                        // Every window built so far, at launch or later (a starter config).
+                        for m in state.window_meta() {
+                            let _ = app_handle.emit_to(m.id.as_str(), "config-reloaded", ());
+                        }
                         let entries = reload::window_entries(&app_handle, &state.window_meta());
                         // The app menu is global, not part of the per-window reconcile: rebuild it so a
                         // `tab_digit_keys` flip (and the Window submenu's entries) track the new config.
@@ -525,10 +520,10 @@ pub fn run() {
                         // running server) is untouched — only the error is surfaced.
                         let msg = e.to_string();
                         eprintln!("config error: {msg}");
-                        for wid in &window_ids {
-                            let _ = app_handle.emit_to(wid.as_str(), "config-error", msg.clone());
-                        }
                         let state = app_handle.state::<commands::AppState>();
+                        for m in state.window_meta() {
+                            let _ = app_handle.emit_to(m.id.as_str(), "config-error", msg.clone());
+                        }
                         let entries = reload::window_entries(&app_handle, &state.window_meta());
                         reload::reconcile_home(
                             &app_handle,

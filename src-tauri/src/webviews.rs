@@ -124,14 +124,6 @@ fn open_in_system_browser(url: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
-/// Create-or-navigate `label`'s content webview to `http://127.0.0.1:{port}/` inside `window`, then
-/// show it and hide every other tab in that same window. This is where a cold tab's webview is
-/// born — shared core for both [`show`] (the normal case, where `window` is derived from `label`'s
-/// own `{window_id}:tab-hash` prefix) and [`show_on`] (a detached window, whose Tauri label has no
-/// relation to that prefix, so the caller resolves `window` itself).
-///
-/// The webview's `on_navigation` is gated by [`is_own_origin`]: only this tab's own loopback origin
-/// navigates in place, everything else escapes to the system browser (see the module doc).
 /// The loading-bar colour as sRGB rgba (0–1) from a window's optional accent hex (`colour`), with a
 /// neutral-blue fallback when unset or unparseable — matching curator's bar.
 #[cfg(target_os = "macos")]
@@ -149,6 +141,14 @@ fn accent_rgba(colour: Option<&str>) -> (f64, f64, f64, f64) {
         .unwrap_or((0.039, 0.518, 1.0, 1.0))
 }
 
+/// Create-or-navigate `label`'s content webview to `http://127.0.0.1:{port}/` inside `window`, then
+/// show it and hide every other tab in that same window. This is where a cold tab's webview is
+/// born — shared core for both [`show`] (the normal case, where `window` is derived from `label`'s
+/// own `{window_id}:tab-hash` prefix) and [`show_on`] (a detached window, whose Tauri label has no
+/// relation to that prefix, so the caller resolves `window` itself).
+///
+/// The webview's `on_navigation` is gated by [`is_own_origin`]: only this tab's own loopback origin
+/// navigates in place, everything else escapes to the system browser (see the module doc).
 fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
     let url: Url = format!("http://127.0.0.1:{port}/")
         .parse()

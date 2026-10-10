@@ -31,9 +31,7 @@
 //! commands) doesn't cover it. Discovered because hot-reload's `listen("config-reloaded", …)`
 //! never fired despite the Rust side confirmed reconciling and `emit_to` returning `Ok(())` —
 //! `emit_to` succeeding only means no serialization/argument error, never that a listener actually
-//! received it. The same gap still applies to `updater:default`/`process:allow-restart`
-//! (chrome-core's in-app updater) — see `capabilities/default.json`'s own doc for why those two
-//! can't be added the same way.
+//! received it.
 //!
 //! **Footgun:** the local/remote split (for this crate's own commands) is by *origin*, not by
 //! "chrome vs. anything else local" — it does not distinguish a second local-origin surface from
@@ -142,20 +140,12 @@ pub struct LectorDetached {
 
 /// The app's managed state. One instance, registered with `.manage()` in `run()`.
 ///
-/// Deviates from the task brief's literal shape in two ways, both load-bearing:
-/// - `views` is a single ordered `Vec<TabView>`, not a `HashMap` alongside a second ordering
-///   structure. `WindowConfig::tab_views()` already returns tabs in the spec's required order
-///   (loose-first, then groups in file order — pinned by a `lector-config` test); concatenating
-///   each window's `tab_views()` in turn and filtering/cloning from that one `Vec` preserves it for
-///   free. A `HashMap` plus a parallel ordering `Vec` would be two structures that can drift — the
-///   "one source of truth" rule this codebase holds elsewhere. `view()`'s linear scan is fine at
-///   this scale (tens of tabs, not thousands).
-/// - `colours` and the three global-config fields (`density`/`sidebar_drag`/`auto_update`) are new:
-///   the brief's `AppState` (servers/views/active only) has no way to answer `window_identity`'s
-///   `colour`/`density`/`sidebar_drag`/`auto_update` fields, which come from `WindowConfig`/`Config`
-///   and are never stored anywhere else. `title` needs no such field — it's read straight off the
-///   live Tauri `Window` (set once at `build_window` time), which is one fewer thing to keep in
-///   sync.
+/// - `views` is a single ordered `Vec<TabView>`, not a `HashMap` plus a second ordering structure
+///   that could drift from it. Each window's `tab_views()` is already in sidebar order (loose-first,
+///   then groups in file order — pinned by a `lector-config` test), and concatenating them keeps
+///   that order. `view()`'s linear scan is fine at this scale (tens of tabs, not thousands).
+/// - `colours` and the global-config fields answer `window_identity`; nothing else stores them.
+///   `title` has no field — it's read straight off the live Tauri `Window`.
 pub struct AppState {
     /// The live serve-loop registry.
     pub servers: Servers,
@@ -166,17 +156,18 @@ pub struct AppState {
     /// The active tab per window label. Chrome-owned selection: lector's Rust side decides, and the
     /// DTO's `active` field tells chrome-core to honour it rather than auto-firing onSelect.
     active: Mutex<HashMap<String, String>>,
-    /// Per-window accent colour (window id → the window's optional hex colour), set once at setup.
+    /// Per-window accent colour (window id → the window's optional hex colour), set when the window
+    /// is built.
     colours: Mutex<HashMap<String, Option<String>>>,
-    /// Whole-app chrome density from the config, set once at setup. `window_identity` re-reads it
-    /// live (rather than trusting a launch-time JS snapshot) so a future hot-reload can update it.
+    /// Whole-app chrome density from the config, set on every clean load. `window_identity` re-reads
+    /// it live rather than trusting a launch-time JS snapshot.
     density: Mutex<Density>,
-    /// Whole-app `sidebar_drag` from the config, set once at setup.
+    /// Whole-app `sidebar_drag` from the config, set on every clean load.
     sidebar_drag: AtomicBool,
     /// Whole-app `dark_mode` from the config, re-set on every clean load; read when a window is
     /// (re)built so a reopened window takes the current theme.
     dark_mode: AtomicBool,
-    /// Whole-app `auto_update` from the config, set once at setup.
+    /// Whole-app `auto_update` from the config, set on every clean load.
     auto_update: AtomicBool,
     /// Every configured window's fixed identity (see [`WindowMeta`]), for the menu spine's Window
     /// submenu and reopening a closed window from it. Grows as `lib.rs` builds windows (at launch,
@@ -267,16 +258,11 @@ impl AppState {
     /// This is the state half of `unload_tab` — split out from the `#[tauri::command]` wrapper so it
     /// needs no `AppHandle`/webview and is directly unit-testable.
     ///
-    /// This function itself never promotes a neighbour — it only tears down and clears. The
-    /// `unload_tab` **command** layers neighbour-promotion on top, via `neighbour_label` delegating
-    /// to `shell_core::pick_live_neighbour`. Clearing active here is therefore now specifically the
-    /// *last-live-tab* (empty background) path, not the always-path: lector keeps every visited tab's
-    /// server live in the background (`select`/`webviews::show` never stop a previous tab, and
-    /// `webviews::raise_only` only hides it), so a live sibling to promote to usually exists. Leaving
-    /// a stale `active` label here regardless is exactly the Finding-1 bug: `get_tabs`' DTO would keep
-    /// reporting the cold tab as active, `chrome.js`'s `wasActive` would stay true on a re-click, and
-    /// the click would route to `home_tab` (which errors — the server is stopped) instead of
-    /// `select_tab` (which would restart it).
+    /// This function never promotes a neighbour — the `unload_tab` **command** layers that on top
+    /// (`neighbour_label` → `shell_core::pick_live_neighbour`), so the cleared state is what remains
+    /// when this was the last live tab. Active must be cleared: a stale label keeps `get_tabs`' DTO
+    /// reporting the cold tab as active, so `chrome.js`'s `wasActive` routes the re-click to
+    /// `home_tab` (which errors — the server is stopped) instead of `select_tab` (which restarts it).
     pub fn unload(&self, label: &str) {
         self.servers.stop(label);
         self.clear_active_if(label);
@@ -1029,13 +1015,9 @@ mod tests {
 
     #[test]
     fn unload_clears_active_so_a_reclick_routes_to_select_not_home() {
-        // Regression for the Finding-1 bug: unloading the active tab must clear AppState.active for
-        // its window. Before the fix, `unload_tab` only stopped the server — `active` kept pointing
-        // at the now-cold tab, so `get_tabs`' DTO kept reporting it `active: true`, `chrome.js`'s
-        // `wasActive = this.active === id` stayed true on the next click, and the click routed to
-        // `home_tab` instead of `select_tab`. `home_tab` does `servers.port(&label).ok_or("tab is
-        // not live")?` against a stopped server — an immediate, permanent error until some other tab
-        // was selected first (which is the only thing that used to overwrite `active`).
+        // Unloading the active tab must clear AppState.active for its window, or `get_tabs`' DTO
+        // keeps reporting the cold tab active and the re-click routes to `home_tab`, which errors
+        // against the stopped server (see `AppState::unload`).
         let state = AppState::new();
         let views = vec![lector_config::TabView {
             label: "w1:tab-a".into(),

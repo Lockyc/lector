@@ -61,7 +61,8 @@ build from source.
 - **`config.toml` is the source of truth**, in the same block structure as curator's and
   warden's: one or more `[[window]]` blocks, each containing loose `[[window.tab]]` entries
   and/or `[[window.group]]` sections of `[[window.group.tab]]`s. A lector tab points at a
-  **`dir`** — a local doc repo path — rather than a URL. Edits hot-reload on save.
+  **`dir`** — a local doc repo path — rather than a URL. Edits hot-reload on save; a
+  `[[window]]` added, removed or retitled opens or closes live.
 - **`[[window.root]]` discovers repos for you.** Point a root at a projects dir (`dir`, with an
   optional scan `depth`) and every git repo under it becomes a doc tab, shown as a collapsible
   folder tree with a `⟳` rescan button. Discovered tabs are lazy — their server starts on select.

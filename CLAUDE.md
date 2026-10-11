@@ -194,10 +194,12 @@ the origin first if the user closed it while the tab was out.
   no-ops on a detached tab (so a stray hover-✕ or ⌘W can't stop the server behind a still-open
   detached window); and `reload::reconcile`'s `Servers::retain` unions in the detached labels so a
   hot-reload can't drop a popped-out tab's server mid-session. A *genuinely* removed tab's
-  server-stop is deferred to `redock`'s tab-removed branch. See `commands.rs` / `reload.rs`.
+  server-stop is deferred to `redock`'s tab-removed branch — unless its whole window left the
+  config, when `reconcile_windows` (`lib.rs`) closes the detached window with it. See
+  `commands.rs` / `reload.rs`.
 - **State:** `AppState.detached: Mutex<HashMap<detached_label, LectorDetached>>`, where
   `LectorDetached { origin_wid, tab_label, port }` — kept **separate from `window_meta`** so
-  hot-reload reconcile and the Window submenu never see a detached window as a real one; the home
+  the Window submenu never sees a detached window as a real one; the home
   surface still counts it (`reload::reconcile_home` folds `has_detached` into `has_windows`) since
   it's a real surface on screen. `detached_tab_labels()` flattens the map to the set of tab labels,
   used by `tab_dtos` to set each row's `detached` flag and by the `unload_tab`/`retain` guards above.

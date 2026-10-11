@@ -59,6 +59,20 @@ pub fn reconcile(state: &AppState, windows: &[WindowConfig]) -> Vec<TabView> {
     all_views
 }
 
+/// The ids of built windows (`meta`) that `windows` no longer defines — a `[[window]]` deleted, or
+/// retitled (a title is the window's identity, so a retitle is a removal plus an addition). The one
+/// decider for which windows a clean reload closes; [`crate::reconcile_windows`] acts on it.
+pub fn removed_window_ids(meta: &[WindowMeta], windows: &[WindowConfig]) -> HashSet<String> {
+    let wanted: HashSet<String> = windows
+        .iter()
+        .map(|w| lector_config::identity::window_id(&w.title))
+        .collect();
+    meta.iter()
+        .filter(|m| !wanted.contains(&m.id))
+        .map(|m| m.id.clone())
+        .collect()
+}
+
 /// Project every window's fixed [`WindowMeta`] into the menu spine's / home surface's shared
 /// [`shell_core::menu::WindowEntry`] shape, re-checking each one's live `open` state against the
 /// running app (the one field `WindowMeta` deliberately doesn't cache, since it changes independent
@@ -134,6 +148,76 @@ mod tests {
             .0
             .windows
             .remove(0)
+    }
+
+    fn meta(title: &str) -> WindowMeta {
+        WindowMeta {
+            id: lector_config::identity::window_id(title),
+            title: title.to_string(),
+            width: 800.0,
+            height: 600.0,
+            colour: None,
+        }
+    }
+
+    fn windows(titles: &[&str]) -> Vec<WindowConfig> {
+        let src: String = titles
+            .iter()
+            .map(|t| format!("[[window]]\ntitle = \"{t}\"\n"))
+            .collect();
+        lector_config::parse_and_validate(&src).unwrap().0.windows
+    }
+
+    #[test]
+    fn a_retitled_window_is_removed_under_its_old_id_only() {
+        let removed = removed_window_ids(
+            &[meta("Docs"), meta("Notes")],
+            &windows(&["Docs", "Reference"]),
+        );
+        assert_eq!(
+            removed,
+            HashSet::from([lector_config::identity::window_id("Notes")])
+        );
+    }
+
+    #[test]
+    fn an_unchanged_or_grown_config_removes_nothing() {
+        let built = [meta("Docs"), meta("Notes")];
+        assert!(removed_window_ids(&built, &windows(&["Docs", "Notes"])).is_empty());
+        assert!(removed_window_ids(&built, &windows(&["Notes", "Docs", "New"])).is_empty());
+        assert!(removed_window_ids(&[], &windows(&["Docs"])).is_empty());
+    }
+
+    #[test]
+    fn a_window_less_config_removes_every_built_window() {
+        let removed = removed_window_ids(&[meta("Docs"), meta("Notes")], &[]);
+        assert_eq!(removed.len(), 2);
+    }
+
+    #[test]
+    fn take_detached_from_takes_only_the_removed_origins_tabs() {
+        let state = AppState::new();
+        let gone = lector_config::identity::window_id("Gone");
+        let kept = lector_config::identity::window_id("Kept");
+        for (det, origin) in [("d-gone", &gone), ("d-kept", &kept)] {
+            state.detached.lock().unwrap().insert(
+                det.to_string(),
+                crate::commands::LectorDetached {
+                    origin_wid: origin.clone(),
+                    tab_label: format!("{origin}:tab-x"),
+                    port: 0,
+                },
+            );
+        }
+
+        let taken = state.take_detached_from(&HashSet::from([gone.clone()]));
+
+        assert_eq!(taken, vec!["d-gone".to_string()]);
+        assert_eq!(
+            state.detached_tab_labels(),
+            HashSet::from([format!("{kept}:tab-x")]),
+            "a kept window's popped-out tab must stay detached"
+        );
     }
 
     #[test]

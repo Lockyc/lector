@@ -113,9 +113,9 @@ pub fn tab_dtos(
 
 /// A configured window's fixed identity — enough to rebuild it after the user closes it (the
 /// Window menu's reopen path) or to describe it to the menu spine / home surface. `id`/`title`/
-/// `colour` are fixed once the window is built (hot-reload builds a newly-added window but never
-/// edits or removes an existing entry); `width`/`height` are its *initial* size, reused verbatim on
-/// a rebuild since Tauri doesn't remember a closed window's last size once it's gone.
+/// `colour` are fixed once the window is built (a clean hot-reload adds and removes whole entries —
+/// `crate::reconcile_windows` — but never edits one); `width`/`height` are its *initial* size,
+/// reused verbatim on a rebuild since Tauri doesn't remember a closed window's last size once it's gone.
 #[derive(Debug, Clone)]
 pub struct WindowMeta {
     pub id: String,
@@ -126,7 +126,7 @@ pub struct WindowMeta {
 }
 
 /// A tab popped out into its own detached window (`pop_out_tab`). Kept in [`AppState::detached`],
-/// **separate from `window_meta`**, so hot-reload reconcile and the Window submenu never see it —
+/// **separate from `window_meta`**, so the Window submenu never sees it —
 /// the same reason curator keeps its equivalent (`CuratorDetached`) out of its window registry.
 /// `port` is recorded rather than re-derived from `Servers::port` on redock: the server is never
 /// stopped across the hop (that's the whole point of a near-lossless pop-out), so the port a
@@ -171,8 +171,8 @@ pub struct AppState {
     auto_update: AtomicBool,
     /// Every configured window's fixed identity (see [`WindowMeta`]), for the menu spine's Window
     /// submenu and reopening a closed window from it. Grows as `lib.rs` builds windows (at launch,
-    /// via `reload_now`, and on a clean hot-reload); never shrinks — a window that's closed stays in
-    /// this list so it can be rebuilt.
+    /// via `reload_now`, and on a clean hot-reload) and shrinks only when a clean hot-reload drops a
+    /// window from the config — a window the user closes stays in this list so it can be rebuilt.
     window_meta: Mutex<Vec<WindowMeta>>,
     /// Tabs currently popped out into their own detached window, keyed by the detached window's
     /// Tauri label ([`shell_core::detach::detached_label`]). **Separate from `window_meta`** so
@@ -328,7 +328,7 @@ impl AppState {
     }
 
     /// Replace the whole window-meta list. Callers build the new list starting from
-    /// [`window_meta`](Self::window_meta) (append-only in practice — see the field's own doc).
+    /// [`window_meta`](Self::window_meta) (see the field's own doc for when it grows and shrinks).
     pub fn set_window_meta(&self, meta: Vec<WindowMeta>) {
         *self.window_meta.lock().expect("window_meta lock") = meta;
     }
@@ -343,6 +343,23 @@ impl AppState {
             .values()
             .map(|d| d.tab_label.clone())
             .collect()
+    }
+
+    /// Remove and return the detached-window labels of every tab popped out of a window in
+    /// `origins`. Taken *before* those windows are destroyed, so `redock` finds nothing to return
+    /// to a window that no longer exists, and the next `reload::reconcile`'s `retain` stops the
+    /// tabs' servers like any other removed tab's.
+    pub fn take_detached_from(&self, origins: &HashSet<String>) -> Vec<String> {
+        let mut detached = self.detached.lock().expect("detached lock");
+        let labels: Vec<String> = detached
+            .iter()
+            .filter(|(_, d)| origins.contains(&d.origin_wid))
+            .map(|(label, _)| label.clone())
+            .collect();
+        for label in &labels {
+            detached.remove(label);
+        }
+        labels
     }
 }
 

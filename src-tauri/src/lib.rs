@@ -94,18 +94,29 @@ fn apply_config(
     }
 }
 
-/// Build every window in `cfg.windows` that doesn't already have a live Tauri window, installing
-/// its accent colour and a [`commands::WindowMeta`] entry (so the menu spine's Window submenu and a
-/// later reopen can find it — see that struct's doc). Existing windows are left untouched. Returns
-/// the ids it actually built, so a caller running `open_on_launch` selection afterwards (which
-/// needs `apply_config` to have populated tab state first, and must not re-select on top of an
-/// already-open window's current tab) knows which ones are new.
+/// Make the set of built windows match `cfg.windows`: build every configured window that doesn't
+/// already have a live Tauri window, installing its accent colour and a [`commands::WindowMeta`]
+/// entry (so the menu spine's Window submenu and a later reopen can find it — see that struct's
+/// doc), and destroy every built window the config no longer defines
+/// ([`reload::removed_window_ids`]) along with the detached windows of tabs popped out of it,
+/// dropping its `WindowMeta`. Existing windows still in the config are left untouched. Returns the
+/// ids it built, so a caller running `open_on_launch` selection afterwards (which needs
+/// `apply_config` to have populated tab state first, and must not re-select on top of an
+/// already-open window's current tab) knows which ones are new. The removed windows' tab servers
+/// are stopped by the `apply_config` that follows, whose `retain` no longer sees their labels.
 ///
 /// Used by `run()`'s setup (every window is new there), [`reload_now`] and the config-file
-/// watcher's clean hot-reload (a `[[window]]` added, or retitled — a new id — mid-session).
-fn build_missing_windows(app: &tauri::AppHandle, cfg: &lector_config::Config) -> Vec<String> {
+/// watcher's clean hot-reload — a failed parse never reaches it, so it never closes anything.
+///
+/// Replacements are built before anything is destroyed, and when nothing else would stay on screen
+/// the home surface is shown first: Tauri exits the app the moment its last window is destroyed.
+fn reconcile_windows(app: &tauri::AppHandle, cfg: &lector_config::Config) -> Vec<String> {
     let state = app.state::<commands::AppState>();
     let mut meta = state.window_meta();
+    let removed = reload::removed_window_ids(&meta, &cfg.windows);
+    meta.retain(|m| !removed.contains(&m.id));
+    let detached = state.take_detached_from(&removed);
+
     let mut built = Vec::new();
     for win_cfg in &cfg.windows {
         let wid = lector_config::identity::window_id(&win_cfg.title);
@@ -124,6 +135,7 @@ fn build_missing_windows(app: &tauri::AppHandle, cfg: &lector_config::Config) ->
             continue;
         }
         state.set_colour(&wid, win_cfg.colour.clone());
+        meta.retain(|m| m.id != wid);
         meta.push(commands::WindowMeta {
             id: wid.clone(),
             title: win_cfg.title.clone(),
@@ -133,7 +145,20 @@ fn build_missing_windows(app: &tauri::AppHandle, cfg: &lector_config::Config) ->
         });
         built.push(wid);
     }
-    state.set_window_meta(meta);
+    state.set_window_meta(meta.clone());
+
+    let doomed: Vec<String> = removed.into_iter().chain(detached).collect();
+    let survivor = app.windows().keys().any(|label| !doomed.contains(label));
+    if !doomed.is_empty() && !survivor {
+        let entries = reload::window_entries(app, &meta);
+        let path = lector_config::resolve_config_path();
+        reload::reconcile_home(app, &entries, &path.to_string_lossy(), path.exists(), None);
+    }
+    for label in &doomed {
+        if let Some(win) = app.get_window(label) {
+            let _ = win.destroy();
+        }
+    }
     built
 }
 
@@ -289,7 +314,7 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
 /// home surface — which closes it, since a real window now exists.
 ///
 /// Not reused by the config-file watcher, which has its own bookkeeping (format-on-save echo
-/// suppression, per-reload event emission) around the same `build_missing_windows` +
+/// suppression, per-reload event emission) around the same `reconcile_windows` +
 /// `select_startup_tabs` steps.
 pub(crate) fn reload_now(app: &tauri::AppHandle) {
     let path = lector_config::resolve_config_path();
@@ -301,7 +326,7 @@ pub(crate) fn reload_now(app: &tauri::AppHandle) {
         }
     };
 
-    let built = build_missing_windows(app, &cfg);
+    let built = reconcile_windows(app, &cfg);
     apply_config(app, &cfg, &warnings);
     select_startup_tabs(app, &cfg, &built);
 
@@ -383,7 +408,7 @@ pub fn run() {
 
             // Build every configured window (+ its accent colour) first, so the reconcile below —
             // and the `open_on_launch` selection after it — have somewhere to point a webview at.
-            let built = build_missing_windows(app.handle(), &cfg);
+            let built = reconcile_windows(app.handle(), &cfg);
 
             apply_config(app.handle(), &cfg, &warnings);
 
@@ -516,9 +541,9 @@ pub fn run() {
                         } else {
                             None
                         };
-                        // A `[[window]]` added (or retitled) mid-session is built live, like a
-                        // launch-time one, and gets its startup tab.
-                        let built = build_missing_windows(&app_handle, &new_cfg);
+                        // A `[[window]]` added mid-session is built live, like a launch-time one,
+                        // and gets its startup tab; one dropped (or retitled away) is closed.
+                        let built = reconcile_windows(&app_handle, &new_cfg);
                         apply_config(&app_handle, &new_cfg, &warnings);
                         select_startup_tabs(&app_handle, &new_cfg, &built);
                         let state = app_handle.state::<commands::AppState>();

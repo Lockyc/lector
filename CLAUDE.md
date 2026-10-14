@@ -340,10 +340,10 @@ use the recipes:
 - `just <core>-dev` (`chrome-dev` / `config-dev` / `shell-dev` / `compositor-dev`) activates
   that core's patch against the sibling `../<core>` checkout.
 - `just <core>-pin` re-pins to that sibling's pushed HEAD and deactivates the patch.
-- `just cores-pin` re-pins **all four** in one go — it is a fanout over the four `*-pin`
-  recipes above, not a second implementation of pinning. If a change to `cores-pin` ever needs a
-  `sed` that rewrites a rev directly, that's a sign it has drifted into a shadow implementation
-  — fix it to call the recipe instead.
+- `just cores-pin` re-pins **all four** in one go, in `scripts/tooling.env`'s `CORES` order.
+
+All of them wrap shell-core's generated `scripts/core-patch.sh`; `CORES` names each core's crate
+and the manifest its rev lives in.
 
 Land order for a change that spans a shared core and lector: push the core change first (its
 new rev must exist on the remote before lector can pin it), then run `just <core>-pin` in
@@ -363,11 +363,12 @@ forward-merged back into `dev`. Never commit code directly to `main`.
 Version lives in **`src-tauri/Cargo.toml`** — the single source of truth, like
 curator's and warden's. Releases are notarized `.app` bundles with an in-app minisign-signed
 updater (`tauri-plugin-updater`), mirroring curator's and warden's release shape: bump the
-version, tag `v<version>`, fast-forward `main`, publish a GitHub release with notes, then attach
-the notarized artifacts via `just release` (`scripts/release.sh`, generated from shell-core,
-parameterized by the tracked `scripts/tooling.env`). No CI: lector
-ships on macOS only, so the local `just gate` is the check — run it per change and green before
-tagging.
+version on `dev`, commit and push, then **`just release [notes=<file>]`** (`just gate` +
+`scripts/release.sh`, generated from shell-core, parameterized by the tracked
+`scripts/tooling.env`) builds and notarizes, then tags `v<version>`, fast-forwards `main`, pushes
+both, and publishes the GitHub release with the notes (default: commit subjects since the previous
+tag) and every asset — nothing goes public until the build succeeds. No CI: lector ships on macOS
+only, so the local `just gate` is the check — run it per change.
 
 **What `just release` needs from the build environment** (it is env-driven, and refuses to run
 without them): `TAURI_SIGNING_PRIVATE_KEY` — the **contents** of the updater key file, conventionally
@@ -386,8 +387,7 @@ demand the signing key and break the keyless path.
 
 ## Generated scripts belong to shell-core
 
-`scripts/release.sh`, `scripts/gen-latest-json.sh`, `scripts/install-app.sh`, and
-`scripts/launch-app.sh` are **generated, git-ignored** — materialized by `src-tauri/build.rs` from
+The shared scripts (listed in `.gitignore`) are **generated, git-ignored** — materialized by `src-tauri/build.rs` from
 the pinned shell-core rev. **Edit them in shell-core, never here**; a local edit is silently
 overwritten on the next build. The tracked `scripts/tooling.env` is the only per-app input they read.
 

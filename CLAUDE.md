@@ -378,7 +378,7 @@ a Developer ID Application cert, plus `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID
 states the interface.
 
 **Building without any of them is supported and expected.** `just build` with the signing/notary vars
-unset produces an ad-hoc, unsigned bundle, and `just deploy` strips the Gatekeeper quarantine xattr so
+unset produces an ad-hoc, unsigned bundle, and `just install` strips the Gatekeeper quarantine xattr so
 a local copy still runs — the from-source path a contributor gets. Signing is enabled by the
 environment, never pinned in `tauri.conf.json`: `createUpdaterArtifacts` is switched on release-only
 via `release.sh`'s `--config` override, because baking it in would make **every** `cargo tauri build`
@@ -391,9 +391,9 @@ demand the signing key and break the keyless path.
 the pinned shell-core rev. **Edit them in shell-core, never here**; a local edit is silently
 overwritten on the next build. The tracked `scripts/tooling.env` is the only per-app input they read.
 
-- **`just deploy` launches via `scripts/launch-app.sh`, never a bare `open`.** `open` forwards the
+- **`just install` launches via `scripts/launch-app.sh`, never a bare `open`.** `open` forwards the
   *caller's* whole environment to the launched app (process parentage is clean — launchd — the
-  environment is not), so deploying from a terminal runs lector with that terminal's `TERM*`,
+  environment is not), so installing from a terminal runs lector with that terminal's `TERM*`,
   `GHOSTTY_*`, `TMUX*`, `SHELL` and any agent/tooling vars: an environment no Dock/Spotlight launch
   ever reproduces, which makes bugs appear or vanish by launch method. `launch-app.sh` wraps `open`
   in `env -i` so the app gets only the launchd GUI-session environment. Shared with warden +

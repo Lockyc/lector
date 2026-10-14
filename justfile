@@ -19,7 +19,7 @@ run:
 # Validate a config and print the resolved window/tab tree + warnings (defaults to the demo).
 [group("dev")]
 validate path="examples/config.toml":
-    cargo run -p lector -- validate "{{justfile_directory()}}/{{path}}"
+    cargo run -p lector -- validate "{{path}}"
 
 # Run the workspace tests
 [group("check")]
@@ -55,7 +55,7 @@ gate:
 # ── the whole graph at once ──
 
 # Re-pin ALL four cores to their pushed HEADs (runs each *-pin in turn). Run before committing.
-[group("check")]
+[group("pin")]
 cores-pin:
     @just chrome-pin
     @just config-pin
@@ -95,10 +95,10 @@ chrome-pin:
     cargo update -p chrome-core || cargo metadata --format-version 1 >/dev/null # reconcile Cargo.lock on a patch→git flip: bare -p cannot match the patched (path) source, a minimal resolve does
     echo "✓ pinned chrome-core → $rev (patch deactivated). Commit src-tauri/Cargo.toml + Cargo.lock."
 
-# Open chrome-core's visual preview loop (requires ../chrome-core checked out)
+# Serve chrome-core's visual preview with live reload (requires ../chrome-core checked out)
 [group("chrome")]
 chrome-preview:
-    @[ -f ../chrome-core/justfile ] && just -f ../chrome-core/justfile preview || echo "✗ ../chrome-core not found — ghq get github.com/Lockyc/chrome-core"
+    @if [ -f ../chrome-core/justfile ]; then just -f ../chrome-core/justfile dev; else echo "✗ ../chrome-core not found — ghq get github.com/Lockyc/chrome-core"; exit 1; fi
 
 # ── shared config-core dev loop (mirrors chrome-*; config-core is git-pinned in lector-config) ──
 
@@ -204,11 +204,11 @@ compositor-pin:
 build:
     cd src-tauri && cargo tauri build
 
-# Build a NOTARIZED lector.app + updater artifacts and attach them to its GitHub release
-# (version from src-tauri/Cargo.toml). Run AFTER the release is tagged/pushed and
+# Version comes from src-tauri/Cargo.toml. Run AFTER the release is tagged/pushed and
 # `gh release create v<version>` published the notes (see CLAUDE.md › Releases). One command:
 # build → notarize → zip → upload the app + the signed updater tarball/.sig/latest.json. Refuses
 # to run without the Apple signing/notary env AND the updater key. Mirrors warden's `just release`.
+# Build a NOTARIZED lector.app + updater artifacts and attach them to its GitHub release
 [group("dist")]
 release:
     bash scripts/release.sh

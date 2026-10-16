@@ -15,9 +15,9 @@ A macOS console of grouped tabs over locally-rendered documentation sites. One t
 repo on disk, rendered live from its working tree: editing a `.md` file updates the tab
 immediately — no build step, no deploy, nothing published.
 
-It's the third sibling to two other apps: **[warden](https://github.com/Lockyc/warden)**
-curates terminals, **[curator](https://github.com/Lockyc/curator)** curates browser tabs, and
-lector curates local documentation the same way.
+lector has two sibling apps built the same way: **[warden](https://github.com/Lockyc/warden)**
+curates terminals and **[curator](https://github.com/Lockyc/curator)** curates browser tabs;
+lector curates local documentation.
 
 ## Status
 
@@ -39,7 +39,8 @@ Or install from a terminal:
 curl -fsSL https://raw.githubusercontent.com/Lockyc/lector/main/install.sh | bash
 ```
 
-Re-running either path updates lector (`git pull` + rebuild).
+Re-running either path rebuilds lector from the latest source; a downloaded or installed lector
+also updates itself (below).
 
 ## Updates
 
@@ -50,8 +51,6 @@ sidebar shows an *Update available* bar with a one-click **Update & Relaunch**.
 - **Confirm-to-install** — nothing installs silently; you approve each update.
 - **Signed** — each update's signature is verified before it installs.
 - **Opt out** with `auto_update = false` (the **Check for Updates…** menu item still works).
-
-Re-run `install.sh` only to build from source, or on an install too old to update itself.
 
 ## Model
 
@@ -136,7 +135,7 @@ colour = "#4a9"
 |---|---|---|
 | `title` | *required* | Display label. |
 | `dir` | *required* | The doc repo to render (`~` expanded). A missing dir is a warning, not an error. |
-| `load_on_open` | `false` | Start this repo's server at launch. |
+| `load_on_open` | `false` | Load this tab at launch instead of on first select. |
 
 ### `[[window.group]]`
 

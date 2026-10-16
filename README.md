@@ -12,11 +12,10 @@
 </p>
 
 A macOS console of grouped tabs over locally-rendered documentation sites. One tab is one doc
-repo on disk: selecting it starts a live-reloading server on an ephemeral loopback port and
-points a webview at it, so editing a `.md` file updates the tab immediately — no build step, no
-deploy, nothing published.
+repo on disk, rendered live from its working tree: editing a `.md` file updates the tab
+immediately — no build step, no deploy, nothing published.
 
-It's the third sibling to two existing apps: **[warden](https://github.com/Lockyc/warden)**
+It's the third sibling to two other apps: **[warden](https://github.com/Lockyc/warden)**
 curates terminals, **[curator](https://github.com/Lockyc/curator)** curates browser tabs, and
 lector curates local documentation the same way.
 
@@ -49,32 +48,28 @@ lector updates itself — no reinstall. On launch, every 6 hours while open, and
 sidebar shows an *Update available* bar with a one-click **Update & Relaunch**.
 
 - **Confirm-to-install** — nothing installs silently; you approve each update.
-- **Signed** — each update is verified against lector's own minisign key before it installs,
-  independent of Apple notarization.
+- **Signed** — each update's signature is verified before it installs.
 - **Opt out** with `auto_update = false` (the **Check for Updates…** menu item still works).
 
-Re-running `install.sh` is only needed to bootstrap the first updater-capable version, or to
-build from source.
+Re-run `install.sh` only to build from source, or on an install too old to update itself.
 
 ## Model
 
-- **`config.toml` is the source of truth**, in the same block structure as curator's and
-  warden's: one or more `[[window]]` blocks, each containing loose `[[window.tab]]` entries
-  and/or `[[window.group]]` sections of `[[window.group.tab]]`s. A lector tab points at a
-  **`dir`** — a local doc repo path — rather than a URL. Edits hot-reload on save; a
+- **`config.toml` is the source of truth**: one or more `[[window]]` blocks, each containing
+  loose `[[window.tab]]` entries and/or `[[window.group]]` sections of `[[window.group.tab]]`s.
+  Each tab points at a **`dir`** — a local doc repo. Edits hot-reload on save; a
   `[[window]]` added, removed or retitled opens or closes live.
 - **`[[window.root]]` discovers repos for you.** Point a root at a projects dir (`dir`, with an
   optional scan `depth`) and every git repo under it becomes a doc tab, shown as a collapsible
-  folder tree with a `⟳` rescan button. Discovered tabs are lazy — their server starts on select.
-- **One tab, one live server.** Selecting a tab starts a
-  [compositor](https://github.com/Lockyc/compositor) `serve` loop on an ephemeral loopback port
-  and points the tab's webview at it; the tab's sidebar dot tracks whether that server is live.
-  **⌘W** unloads the active tab, stopping its server.
+  folder tree with a `⟳` rescan button. Discovered tabs are lazy — they load on select.
+- **Tabs load on select.** Selecting a tab renders its repo live with
+  [compositor](https://github.com/Lockyc/compositor); the sidebar dot shows whether it's loaded.
+  **⌘W** unloads the active tab.
 - **Sidebar search** — the field above the tab list narrows it as you type, matching tab titles,
   folder paths and group names. **⌘⇧F** jumps into it; **↑**/**↓** pick a match, **Enter** opens
   it, **Esc** clears the search.
 - **Pop-out tabs** — **⌘⇧O** (or the pop-out icon on a row's letter tile) moves the active tab
-  into its own window. Its server keeps running across the hop; closing the window returns the
+  into its own window. It stays loaded across the hop; closing the window returns the
   tab to where it came from.
 - **Windows and the home surface** — **⌘⇧W** closes a window and the **Window** menu reopens it.
   With no window open, lector shows a home surface listing every window; with no config, it
@@ -85,8 +80,6 @@ build from source.
 - **Keyboard tab navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle to the previous/next
   tab and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to make **⌘1** / **⌘2**
   cycle instead (jumps shift to **⌘3–⌘9**).
-- **Nothing deployed.** There is no build/publish step in the loop — the whole point is to
-  render a doc repo's *working tree* as you edit it.
 
 ## Config
 
@@ -183,8 +176,8 @@ git config core.hooksPath .githooks   # once per clone: arms the pre-commit / pr
 ```
 
 lector is built on four pinned shared crates —
-[compositor](https://github.com/Lockyc/compositor) (the render/serve engine, one
-`serve_handle()` per open tab), [chrome-core](https://github.com/Lockyc/chrome-core) (the
+[compositor](https://github.com/Lockyc/compositor) (the render/serve engine),
+[chrome-core](https://github.com/Lockyc/chrome-core) (the
 sidebar), [config-core](https://github.com/Lockyc/config-core) (config primitives, formatter,
 root discovery) and [shell-core](https://github.com/Lockyc/shell-core) (release tooling and app
 shell). To build against a sibling checkout of one, see the `*-dev` / `*-pin` recipes in

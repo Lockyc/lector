@@ -204,8 +204,12 @@ async function mountChrome() {
       },
       onRescan() {
         // chrome-core's ⟳ control on a [[window.root]] section header. The component passes the
-        // section (group) name; lector re-scans every root in the config, so it's ignored.
-        invoke("rescan_root").catch((e) => sb.setError(String(e)));
+        // section (group) name; lector re-scans every root in the config, so it's ignored. The
+        // returned promise drives the component's spinner + outcome, so a failure re-rejects.
+        return invoke("rescan_root").catch((e) => {
+          sb.setError(String(e));
+          throw e;
+        });
       },
       onResize(width) {
         // The chrome is the window's full-size main webview: the sidebar's visible width is CSS

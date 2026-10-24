@@ -25,14 +25,8 @@
 //     unreachable; lector's `pop_out_tab` can genuinely fail, e.g. a `dir` that stopped existing).
 
 const { invoke } = window.__TAURI__.core;
-// **Footgun: a bare `listen()` is app-wide, not window-scoped — so per-window events leaked to
-// every window.** The JS API registers a listener as `EventTarget::Any` unless given a target, and
-// Tauri's dispatch short-circuits an `Any` listener *past* the emit's target filter
-// (`match_any_or_filter` in tauri's event/listener.rs) — so `emit_to(<this chrome's label>, …)`
-// was delivered to every window's chrome regardless: ⌘1 cycled the tabs of BOTH windows at once,
-// and `close-tab` / `pop-out-tab` leaked the same way. Binding to this webview registers
-// `EventTarget::Webview { label }`, the only target the emit's `AnyLabel` filter narrows on. Every
-// per-window listener below must use this, not the raw `window.__TAURI__.event.listen`.
+// Webview-scoped listen: a bare listen() is EventTarget::Any and ignores emit_to targeting — see
+// CLAUDE.md › Per-window events.
 const chromeWebview = window.__TAURI__.webview.getCurrentWebview();
 const listen = (event, handler) => chromeWebview.listen(event, handler);
 
@@ -170,11 +164,7 @@ async function popOutTab(tabId) {
 async function mountChrome() {
   const id = await invoke("window_identity");
   const title = (id && id.title) || "";
-  // lector's `window_identity` (commands.rs) deliberately carries no `default_width` field (its
-  // Identity struct is fixed to title/colour/density/sidebar_drag/auto_update), so this always
-  // falls back to the literal below — kept in lockstep BY HAND with webviews.rs's `CHROME_W`
-  // constant (no value crosses the IPC boundary to do it automatically; see that constant's own
-  // comment).
+  // `default_width` is shell-core's CHROME_W, which the launch-time content hole also assumes.
   const defaultWidth = (id && id.default_width) || 240;
 
   sb = window.ChromeSidebar.mount(

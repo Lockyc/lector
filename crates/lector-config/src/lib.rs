@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Force dark appearance app-wide (applied per window at setup). Omit/false = follow system.
     /// Themes the chrome sidebar only — compositor's page shell has its own light/dark toggle that
-    /// persists in-page, and the two can disagree. Accepted for v1 (see CLAUDE.md › Known warts).
+    /// persists in-page, so the chrome and page can disagree — accepted.
     #[serde(default)]
     pub dark_mode: bool,
     /// Reformat the config file in place (house style) on a clean hot-reload. Default false.

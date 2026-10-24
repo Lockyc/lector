@@ -312,33 +312,57 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
 /// Builds every window the freshly-written config defines, applies tab state, runs `open_on_launch`
 /// selection on exactly the newly-built windows (mirroring `run()`'s setup), and reconciles the
 /// home surface — which closes it, since a real window now exists.
-///
-/// Not reused by the config-file watcher, which has its own bookkeeping (format-on-save echo
-/// suppression, per-reload event emission) around the same `reconcile_windows` +
-/// `select_startup_tabs` steps.
 pub(crate) fn reload_now(app: &tauri::AppHandle) {
     let path = lector_config::resolve_config_path();
-    let (cfg, warnings) = match lector_config::load_config(&path) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("config error: {e}");
-            return;
-        }
-    };
+    match lector_config::load_config(&path) {
+        Ok((cfg, warnings)) => apply_clean_load(app, &cfg, &warnings, &path),
+        Err(e) => eprintln!("config error: {e}"),
+    }
+}
 
-    let built = reconcile_windows(app, &cfg);
-    apply_config(app, &cfg, &warnings);
-    select_startup_tabs(app, &cfg, &built);
-
+/// Apply a cleanly loaded config — the one sequence the config watcher, [`reload_now`] and the
+/// chrome's ⟳ rescan all run: build windows the config added (and close dropped ones), apply tab
+/// state, pick startup tabs on newly built windows, refresh every chrome, rebuild the app menu (so
+/// a `tab_digit_keys` flip and the Window submenu track the config) and reconcile the home surface.
+pub(crate) fn apply_clean_load(
+    app: &tauri::AppHandle,
+    cfg: &lector_config::Config,
+    warnings: &[lector_config::Warning],
+    config_path: &std::path::Path,
+) {
+    let built = reconcile_windows(app, cfg);
+    apply_config(app, cfg, warnings);
+    select_startup_tabs(app, cfg, &built);
     let state = app.state::<commands::AppState>();
-    let meta = state.window_meta();
-    let entries = reload::window_entries(app, &meta);
-    // Rebuild the app menu here too, same as the config-file watcher's reload branch — this is
-    // also a clean config load (the home surface's "Create a starter config" button ends up here
-    // via commands::shell_home_create_config), so a `tab_digit_keys` in the freshly-written
-    // config, and the Window submenu's new entries, must take effect without a relaunch.
-    let _ = install_app_menu(app, &path, cfg.tab_digit_keys, &entries);
-    reload::reconcile_home(app, &entries, &path.to_string_lossy(), path.exists(), None);
+    for m in state.window_meta() {
+        let _ = app.emit_to(m.id.as_str(), "config-reloaded", ());
+    }
+    let entries = reload::window_entries(app, &state.window_meta());
+    let _ = install_app_menu(app, config_path, cfg.tab_digit_keys, &entries);
+    reload::reconcile_home(
+        app,
+        &entries,
+        &config_path.to_string_lossy(),
+        config_path.exists(),
+        None,
+    );
+}
+
+/// Surface a config that failed to load: every chrome and the home surface show the error, and
+/// the last-good config (and every running server) is left untouched.
+pub(crate) fn surface_load_error(app: &tauri::AppHandle, msg: &str, config_path: &std::path::Path) {
+    let state = app.state::<commands::AppState>();
+    for m in state.window_meta() {
+        let _ = app.emit_to(m.id.as_str(), "config-error", msg.to_string());
+    }
+    let entries = reload::window_entries(app, &state.window_meta());
+    reload::reconcile_home(
+        app,
+        &entries,
+        &config_path.to_string_lossy(),
+        config_path.exists(),
+        Some(msg),
+    );
 }
 
 /// Build and install the app menu: the shared spine (App/Config/Window) plus lector's own Tab
@@ -512,12 +536,11 @@ pub fn run() {
             // and `lector_config`'s "missing dir warns, never errors" rule this mirrors: an
             // un-cloned repo, or a config with one bad line, must not strand every other tab.
             // The shared shell-core watcher owns the parent-dir watch, the file-name match (macOS
-            // FSEvents-robust — the fix for the old exact-path bug that silently missed every event
-            // under a symlinked config dir), and the echo-swallow (via the `Option<String>` the
-            // closure returns on a format write). lector supplies just the parse + apply.
+            // FSEvents-robust, so a symlinked config dir's events are seen), and the echo-swallow
+            // (via the `Option<String>` the closure returns on a format write). lector supplies just
+            // the parse + apply.
             let app_handle = app.handle().clone();
             let fmt_path = path.clone();
-            let menu_path = path.clone();
             shell_core::watch::watch_config(path.clone(), move |src| {
                 match lector_config::parse_and_validate(src) {
                     Ok((new_cfg, warnings)) => {
@@ -541,51 +564,13 @@ pub fn run() {
                         } else {
                             None
                         };
-                        // A `[[window]]` added mid-session is built live, like a launch-time one,
-                        // and gets its startup tab; one dropped (or retitled away) is closed.
-                        let built = reconcile_windows(&app_handle, &new_cfg);
-                        apply_config(&app_handle, &new_cfg, &warnings);
-                        select_startup_tabs(&app_handle, &new_cfg, &built);
-                        let state = app_handle.state::<commands::AppState>();
-                        // Every window built so far, at launch or later (a starter config).
-                        for m in state.window_meta() {
-                            let _ = app_handle.emit_to(m.id.as_str(), "config-reloaded", ());
-                        }
-                        let entries = reload::window_entries(&app_handle, &state.window_meta());
-                        // The app menu is global, not part of the per-window reconcile: rebuild it so a
-                        // `tab_digit_keys` flip (and the Window submenu's entries) track the new config.
-                        let _ = install_app_menu(
-                            &app_handle,
-                            &menu_path,
-                            new_cfg.tab_digit_keys,
-                            &entries,
-                        );
-                        reload::reconcile_home(
-                            &app_handle,
-                            &entries,
-                            &fmt_path.to_string_lossy(),
-                            true,
-                            None,
-                        );
+                        apply_clean_load(&app_handle, &new_cfg, &warnings, &fmt_path);
                         self_write
                     }
                     Err(e) => {
-                        // Last-good-on-failure: `apply_config` never ran, so state (and every
-                        // running server) is untouched — only the error is surfaced.
                         let msg = e.to_string();
                         eprintln!("config error: {msg}");
-                        let state = app_handle.state::<commands::AppState>();
-                        for m in state.window_meta() {
-                            let _ = app_handle.emit_to(m.id.as_str(), "config-error", msg.clone());
-                        }
-                        let entries = reload::window_entries(&app_handle, &state.window_meta());
-                        reload::reconcile_home(
-                            &app_handle,
-                            &entries,
-                            &fmt_path.to_string_lossy(),
-                            true,
-                            Some(&msg),
-                        );
+                        surface_load_error(&app_handle, &msg, &fmt_path);
                         None
                     }
                 }

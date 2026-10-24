@@ -30,7 +30,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 # The render engine. One serve loop per live tab; lector never renders anything itself.
-compositor = { git = "https://github.com/Lockyc/compositor", rev = "e7bb49609476ca606cc4160262b10e234609cfc5" }
+compositor = { git = "https://github.com/Lockyc/compositor", rev = "93e2d4bbe1189c8479dd4d80263dcfc2e54489aa" }
 # The Tauri runtime sliver: register_plugins (window geometry, updater, process).
 shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "2e095dccee158ff3a98e3b96464400ed17d17251", features = ["runtime"] }
 # Unused directly in this crate's code — registration flows through shell_core::register_plugins,

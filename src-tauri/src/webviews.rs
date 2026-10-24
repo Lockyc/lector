@@ -25,8 +25,8 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 /// The hole-punch compositing primitives — the content-hole rect type ([`HoleRect`]), its
-/// default-sidebar-width offset ([`CHROME_W`], which MUST match `src/chrome.js`'s literal `240`
-/// fallback since no value crosses the IPC boundary), the launch-time best-guess hole
+/// default-sidebar-width offset ([`CHROME_W`], sent to the chrome as `window_identity`'s
+/// `default_width`), the launch-time best-guess hole
 /// ([`initial_hole`]), and the child-webview placement ([`layout_webviews`]) — are byte-identical
 /// with curator and live in `shell_core::compositing`. Re-exported so the rest of this module keeps
 /// naming them `webviews::{CHROME_W, HoleRect, initial_hole, layout_webviews}` unchanged.

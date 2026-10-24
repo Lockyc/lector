@@ -93,13 +93,8 @@ impl Servers {
             .map(|s| s.port)
     }
 
-    /// Raw registry membership — "did `start()` register this label", with no liveness probe.
-    /// `is_alive` (below) is what `commands::tab_dtos` actually uses for the sidebar's `live` dot
-    /// (it probes the port too, which is the whole point of dead-thread detection); this one stays
-    /// a public primitive in its own right, exercised directly by this module's own tests (e.g.
-    /// `reap_drops_a_registered_tab_whose_server_stopped_answering` asserts the registry believes a
-    /// dead tab is live via this exact method, before `reap` corrects it).
-    #[allow(dead_code)] // no non-test caller yet — a deliberately-kept lower-level primitive
+    /// Raw registry membership, no liveness probe (test-only; production uses `is_alive`).
+    #[cfg(test)]
     pub fn is_live(&self, label: &str) -> bool {
         self.live.lock().expect("servers lock").contains_key(label)
     }

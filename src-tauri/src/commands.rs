@@ -25,28 +25,14 @@
 //! and lector genuinely ships a `src-tauri/capabilities/default.json` granting the sidebar
 //! `core:event:allow-listen`/`allow-unlisten` (hot-reload's `config-reloaded`/`config-error`
 //! events, `lib.rs`) and `core:window:allow-start-dragging` (the sidebar's
-//! `data-tauri-drag-region`). **Footgun (found 2026-07-17): before that file existed, both
-//! silently no-op'd** — `event.listen` rejects with `"not allowed"` from the plugin's own ACL, not
-//! from this crate's dispatch path, so the analysis above (which is correct for *this crate's*
-//! commands) doesn't cover it. Discovered because hot-reload's `listen("config-reloaded", …)`
-//! never fired despite the Rust side confirmed reconciling and `emit_to` returning `Ok(())` —
-//! `emit_to` succeeding only means no serialization/argument error, never that a listener actually
-//! received it.
+//! `data-tauri-drag-region`). **Footgun: a missing plugin grant fails silently** — `event.listen`
+//! rejects with `"not allowed"` from the plugin's own ACL, and `emit_to` returning `Ok` proves
+//! nothing about delivery.
 //!
-//! **Footgun:** the local/remote split (for this crate's own commands) is by *origin*, not by
-//! "chrome vs. anything else local" — it does not distinguish a second local-origin surface from
-//! the sidebar. **This is no longer hypothetical**: the home surface (`shell_core::home`, wired in
-//! `lib.rs`) is exactly that second surface, serving `home.html` over its own registered
-//! `shell-home://` custom protocol — which `is_local_url` also classifies `Origin::Local` (Tauri
-//! treats any Builder-registered custom protocol as local; see `shell_core::home::HOME_SCHEME`'s
-//! own doc). It rides the same free pass the sidebar gets, reaching this crate's three
-//! `shell_home_*` commands with no per-caller gate. Accepted, not a bug to fix: unlike curator's
-//! hypothetical case, the home surface's HTML is fixed (bundled into shell-core, never
-//! user-supplied), so there is no untrusted content to isolate it from — the risk this footgun
-//! originally flagged (an attacker-controlled local surface) doesn't apply here. Content webviews
-//! staying `External` (as `webviews.rs` documents) is what keeps *that* risk closed; a real third
-//! local surface hosting anything other than fixed, shell-core-bundled content would need an
-//! explicit gate (a curator-style `is_chrome_caller`).
+//! **Footgun:** the local/remote split (for this crate's own commands) is by *origin*, so the home
+//! surface (`shell-home://`, `shell_core::home`) is a second local-origin surface and reaches these
+//! commands ungated. Accepted because its HTML is fixed and shell-core-bundled; a local surface
+//! serving anything else needs a per-caller gate (a curator-style `is_chrome_caller`).
 
 use crate::servers::Servers;
 use lector_config::{Density, TabView};
@@ -435,14 +421,22 @@ pub fn unload_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, 
     // hole shows another loaded tab rather than the empty background — background only when this was
     // the last live tab. The neighbour is already live, so `select`'s `servers.start` no-ops on it.
     if was_active {
-        let views = state.views_for_window(&window);
-        let live: Vec<bool> = views
-            .iter()
-            .map(|v| state.servers.is_alive(&v.label))
-            .collect();
-        if let Some(next) = neighbour_label(&views, &label, &live) {
-            let _ = select(&app, &state, &next);
-        }
+        promote_neighbour(&app, &state, &window, &label);
+    }
+}
+
+/// Select the nearest docked, live neighbour of `label` in `window_id`. A popped-out tab's server
+/// keeps running for its detached window, but its webview label belongs there, so it is never a
+/// docked neighbour — showing it here would leave the origin blank.
+fn promote_neighbour(app: &tauri::AppHandle, state: &AppState, window_id: &str, label: &str) {
+    let views = state.views_for_window(window_id);
+    let detached = state.detached_tab_labels();
+    let live: Vec<bool> = views
+        .iter()
+        .map(|v| state.servers.is_alive(&v.label) && !detached.contains(&v.label))
+        .collect();
+    if let Some(next) = neighbour_label(&views, label, &live) {
+        let _ = select(app, state, &next);
     }
 }
 
@@ -499,14 +493,7 @@ pub fn pop_out_tab(
     state.clear_active_if(&label);
     crate::webviews::close(&app, &label);
     if was_active {
-        let views = state.views_for_window(&window_id);
-        let live: Vec<bool> = views
-            .iter()
-            .map(|v| state.servers.is_alive(&v.label))
-            .collect();
-        if let Some(next) = neighbour_label(&views, &label, &live) {
-            let _ = select(&app, &state, &next);
-        }
+        promote_neighbour(&app, &state, &window_id, &label);
     }
 
     // Build the detached window: banner title = the TAB's title (not the window's), accent/size =
@@ -632,6 +619,9 @@ pub struct Identity {
     pub density: Density,
     pub sidebar_drag: bool,
     pub auto_update: bool,
+    /// The sidebar's first-run width, `shell_core::compositing::CHROME_W` — the offset the
+    /// launch-time content hole assumes, so the two agree before the first `reportRect`.
+    pub default_width: f64,
 }
 
 /// Return the calling window's identity so the chrome can paint a per-window banner and apply the
@@ -646,6 +636,7 @@ pub fn window_identity(window: tauri::Window, state: tauri::State<'_, AppState>)
         density: *state.density.lock().expect("density lock"),
         sidebar_drag: state.sidebar_drag.load(Ordering::Relaxed),
         auto_update: state.auto_update.load(Ordering::Relaxed),
+        default_width: crate::webviews::CHROME_W,
     }
 }
 
@@ -771,45 +762,15 @@ pub fn shell_home_open_window(id: String, app: tauri::AppHandle) {
 
 /// Re-scan every window's `[[window.root]]`s (and re-read the config) and reconcile — the chrome's
 /// `⟳` rescan button (chrome-core `onRescan`). Projects added/removed on disk appear/vanish without
-/// a config edit. Reuses the whole hot-reload path: `crate::apply_config` re-scans roots (via
-/// `reload::reconcile`, which calls `discover_projects` on every window's `resolved_roots()` on
-/// each invocation — see that function's doc) and reinstalls the global chrome settings, then a
-/// `config-reloaded` emit drives each window's `refresh()`. On a config that now fails to parse,
-/// keeps last-good and surfaces `config-error`, exactly like the config file watcher in `lib.rs`'s
-/// `run()`.
+/// a config edit: `crate::apply_clean_load` re-scans roots (via `reload::reconcile`, which calls
+/// `discover_projects` on every window's `resolved_roots()`), the same path a config-file reload
+/// takes. A config that now fails to parse keeps last-good and surfaces the error.
 #[tauri::command(async)]
-pub fn rescan_root(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
-    use tauri::Emitter;
+pub fn rescan_root(app: tauri::AppHandle) {
     let path = lector_config::resolve_config_path();
     match lector_config::load_config(&path) {
-        Ok((cfg, warnings)) => {
-            crate::apply_config(&app, &cfg, &warnings);
-            for m in state.window_meta() {
-                let _ = app.emit_to(m.id.as_str(), "config-reloaded", ());
-            }
-            let entries = crate::reload::window_entries(&app, &state.window_meta());
-            crate::reload::reconcile_home(
-                &app,
-                &entries,
-                &path.to_string_lossy(),
-                path.exists(),
-                None,
-            );
-        }
-        Err(e) => {
-            let msg = e.to_string();
-            for m in state.window_meta() {
-                let _ = app.emit_to(m.id.as_str(), "config-error", msg.clone());
-            }
-            let entries = crate::reload::window_entries(&app, &state.window_meta());
-            crate::reload::reconcile_home(
-                &app,
-                &entries,
-                &path.to_string_lossy(),
-                path.exists(),
-                Some(&msg),
-            );
-        }
+        Ok((cfg, warnings)) => crate::apply_clean_load(&app, &cfg, &warnings, &path),
+        Err(e) => crate::surface_load_error(&app, &e.to_string(), &path),
     }
 }
 

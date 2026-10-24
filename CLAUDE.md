@@ -304,13 +304,12 @@ weight** — the reason and the silent-failure modes are on those entries in `sr
 by its webview label — but Tauri's dispatch short-circuits any listener registered as
 `EventTarget::Any` *past* the emit's target filter (`match_any_or_filter`, tauri
 `src/event/listener.rs`), and a bare JS `listen(event, handler)` registers exactly that.
-**Footgun: it looks scoped and isn't.** Until fixed, every window's chrome received every
-per-window event — ⌘1 cycled the tabs of *all* windows at once, and `close-tab` / `pop-out-tab`
-leaked the same way. `src/chrome.js` therefore binds its listeners to the chrome webview
+**Footgun: it looks scoped and isn't** — every window's chrome receives every per-window event.
+`src/chrome.js` therefore binds its listeners to the chrome webview
 (`window.__TAURI__.webview.getCurrentWebview().listen`), registering
 `EventTarget::Webview { label }`, the one target the emit's `AnyLabel` filter narrows on. A new
 per-window listener must use that local `listen` wrapper, never the raw
-`window.__TAURI__.event.listen`. Ported from curator, which hit this first.
+`window.__TAURI__.event.listen`.
 
 ## Toolchain lockstep
 
@@ -401,9 +400,7 @@ overwritten on the next build. The tracked `scripts/tooling.env` is the only per
 
 ## Deferred work
 
-Conscious deferrals are tracked in [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md) — currently the
-per-tab Tab-submenu actions (reveal-in-Finder, copy served URL, open repo dir) that nothing yet
-needs. **Consult it before "fixing" a gap you've just noticed** — it may be a recorded deferral
+Conscious deferrals are tracked in [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md). **Consult it before "fixing" a gap you've just noticed** — it may be a recorded deferral
 with a reason.
 
 ## The public repo

@@ -605,7 +605,7 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=373acfc95e952c8065e6a056b46d37edb4ceaaef#373acfc95e952c8065e6a056b46d37edb4ceaaef"
+source = "git+https://github.com/Lockyc/config-core?rev=632b918b62e4677f5254e881a650f7cc74230030#632b918b62e4677f5254e881a650f7cc74230030"
 dependencies = [
  "dirs",
  "serde",
@@ -3686,7 +3686,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.3.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=2e095dccee158ff3a98e3b96464400ed17d17251#2e095dccee158ff3a98e3b96464400ed17d17251"
+source = "git+https://github.com/Lockyc/shell-core?rev=01989b90ea8380c980c939c9e333f28229611bde#01989b90ea8380c980c939c9e333f28229611bde"
 dependencies = [
  "block2",
  "notify",
@@ -5156,7 +5156,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

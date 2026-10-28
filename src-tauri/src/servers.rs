@@ -238,7 +238,9 @@ mod tests {
         use std::io::{Read, Write};
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let mut stream = std::net::TcpStream::connect(addr).unwrap();
-        let req = format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        // The webview's own Host; compositor refuses a non-loopback one on a loopback bind.
+        let req =
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
         stream.write_all(req.as_bytes()).unwrap();
         let mut resp = String::new();
         stream.read_to_string(&mut resp).unwrap();

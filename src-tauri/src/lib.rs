@@ -195,8 +195,16 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
     use shell_core::menu::{SpineAction, TabNavAction};
     let target = routed.target.as_str();
     if routed.from_detached.is_some() {
-        if let Some(w) = app.get_window(target) {
-            let _ = w.set_focus();
+        match app.get_window(target) {
+            Some(w) => {
+                let _ = w.set_focus();
+            }
+            // The pop-out's origin was closed: bring it back. Its chrome mounts fresh, with nothing
+            // listening yet for this command, so the command ends there.
+            None => {
+                open_or_focus_window(app, target);
+                return;
+            }
         }
     }
     let from = routed.from_detached.as_deref().and_then(|l| {
@@ -495,8 +503,7 @@ pub fn run() {
                 // Tab ▸ Cycle Tabs: save the flip; the watcher's reload rebuilds the menu. muda
                 // already flipped the tick, so a failed write rebuilds to undo it.
                 if id == shell_core::menu::ids::TAB_DIGIT_CYCLE {
-                    let next = app.state::<commands::AppState>().tab_digit_keys().toggled();
-                    if let Err(e) = commands::write_tab_digit_keys(&cfg_for_menu, next) {
+                    if let Err(e) = commands::toggle_tab_digit_keys(&cfg_for_menu) {
                         surface_load_error(app, &e, &cfg_for_menu);
                         refresh_menu(app);
                     }

@@ -216,6 +216,8 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
                 .state::<crate::commands::AppState>()
                 .colour_for(window.label());
             shell_core::progress_bar::install(&wv, accent_rgba(accent.as_deref()));
+            // The page composites over the chrome, which can't see the pointer leave for it.
+            shell_core::web::pointer::watch(&wv);
         }
     }
     raise_only(window, label)

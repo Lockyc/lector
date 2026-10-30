@@ -201,7 +201,9 @@ the origin first if the user closed it while the tab was out.
   config, when `window_closed` (`lib.rs`) closes the detached window with it. See
   `commands.rs` / `reload.rs`.
 - **State:** `AppState.detached: Mutex<HashMap<detached_label, LectorDetached>>`, where
-  `LectorDetached { origin_wid, tab_label, port }` — kept **separate from the `WindowSet`** so
+  `LectorDetached { origin_wid, origin_title, tab_label, port }`, the origin found by title (a
+  window renamed in place and closed reopens under another label; `AppState::resolve_origin`
+  rehomes the tab's label and server onto it) — kept **separate from the `WindowSet`** so
   the Window submenu never sees a detached window as a real one; its count is mirrored into the
   set (`sync_detached`) so the home surface stays away while one is on screen.
   `detached_tab_labels()` flattens the map to the set of tab labels,

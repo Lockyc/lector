@@ -38,6 +38,7 @@
 use crate::servers::Servers;
 use lector_config::{Config, Density, TabDigitKeys, TabView, WindowConfig};
 use serde::{Deserialize, Serialize};
+use shell_core::menu::WindowEntry;
 use shell_core::window_of;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -106,10 +107,34 @@ pub fn tab_dtos(
 /// stopped across the hop (that's the whole point of a near-lossless pop-out), so the port a
 /// `pop_out_tab` call resolved is still the right one, and storing it here means `redock` needs no
 /// extra registry lookup to reuse it.
+///
+/// The origin is known by its **title**, patched on an in-place rename
+/// ([`AppState::retitle_origins`]): a window renamed in place and then closed comes back under a
+/// label made from its new title, and another window may take the label it left. `origin_wid`,
+/// `tab_label` and the tab's server key follow the window it resolves to
+/// ([`AppState::popped_out_of`], [`AppState::resolve_origin`]).
 pub struct LectorDetached {
     pub origin_wid: String,
+    pub origin_title: String,
     pub tab_label: String,
     pub port: u16,
+}
+
+impl LectorDetached {
+    /// Point the bookkeeping at the origin's label `wid` (the tab's label is namespaced under it);
+    /// the label it had, when that changed.
+    fn rehome(&mut self, wid: &str) -> Option<String> {
+        if self.origin_wid == wid {
+            return None;
+        }
+        let within = self
+            .tab_label
+            .rsplit_once(':')
+            .map_or(self.tab_label.as_str(), |(_, w)| w);
+        let new = shell_core::label::child_label(wid, within);
+        self.origin_wid = wid.to_string();
+        Some(std::mem::replace(&mut self.tab_label, new))
+    }
 }
 
 /// The app's managed state. One instance, registered with `.manage()` in `run()`.
@@ -345,15 +370,16 @@ impl AppState {
             .collect()
     }
 
-    /// Remove and return the detached-window labels of every tab popped out of a window in
-    /// `origins`. Taken before those detached windows are destroyed, so `redock` finds nothing to
-    /// return to a window that no longer exists, and the next `reload::reconcile`'s `retain` stops
-    /// the tabs' servers like any other removed tab's.
-    pub fn take_detached_from(&self, origins: &HashSet<String>) -> Vec<String> {
+    /// Remove and return the detached-window labels of every tab whose origin no window in
+    /// `entries` (the `WindowSet`'s) is titled — its window left the config. Taken before those
+    /// detached windows are destroyed, so `redock` finds nothing to return to a window that no
+    /// longer exists, and the next `reload::reconcile`'s `retain` stops the tabs' servers like any
+    /// other removed tab's.
+    pub fn take_orphaned_detached(&self, entries: &[WindowEntry]) -> Vec<String> {
         let mut detached = self.detached.lock().expect("detached lock");
         let labels: Vec<String> = detached
             .iter()
-            .filter(|(_, d)| origins.contains(&d.origin_wid))
+            .filter(|(_, d)| origin_home(&d.origin_title, entries).is_none())
             .map(|(label, _)| label.clone())
             .collect();
         for label in &labels {
@@ -361,6 +387,57 @@ impl AppState {
         }
         labels
     }
+
+    /// The tabs popped out of the window `wid` titled `title`, which is being built: matched by
+    /// title and rehomed onto `wid`, since a reopened origin may hold another label than the one
+    /// it left.
+    pub fn popped_out_of(&self, wid: &str, title: &str) {
+        let mut detached = self.detached.lock().expect("detached lock");
+        for d in detached
+            .values_mut()
+            .filter(|d| d.origin_title.trim() == title.trim())
+        {
+            if let Some(old) = d.rehome(wid) {
+                self.servers.rekey(&old, &d.tab_label);
+            }
+        }
+    }
+
+    /// Resolve the popped-out tab `detached_label`'s origin by title against `entries` and rehome
+    /// its bookkeeping there: the origin's label and whether it is open. `None` when the tab isn't
+    /// popped out or its origin left the config.
+    pub fn resolve_origin(
+        &self,
+        detached_label: &str,
+        entries: &[WindowEntry],
+    ) -> Option<(String, bool)> {
+        let mut detached = self.detached.lock().expect("detached lock");
+        let d = detached.get_mut(detached_label)?;
+        let home = origin_home(&d.origin_title, entries)?;
+        if let Some(old) = d.rehome(&home.0) {
+            self.servers.rekey(&old, &d.tab_label);
+        }
+        Some(home)
+    }
+
+    /// Carry a window's in-place rename from `old` to `new` into the popped-out tabs' origin titles.
+    pub fn retitle_origins(&self, old: &str, new: &str) {
+        let mut detached = self.detached.lock().expect("detached lock");
+        for d in detached
+            .values_mut()
+            .filter(|d| d.origin_title.trim() == old.trim())
+        {
+            d.origin_title = new.trim().to_string();
+        }
+    }
+}
+
+/// The configured window titled `origin_title`: its current label and whether it is open.
+fn origin_home(origin_title: &str, entries: &[WindowEntry]) -> Option<(String, bool)> {
+    entries
+        .iter()
+        .find(|e| e.title.trim() == origin_title.trim())
+        .map(|e| (e.id.clone(), e.open))
 }
 
 impl Default for AppState {
@@ -561,6 +638,7 @@ pub fn pop_out_tab(
         detached_label.clone(),
         LectorDetached {
             origin_wid: window_id,
+            origin_title: origin.title.trim().to_string(),
             tab_label: label,
             port,
         },
@@ -806,6 +884,99 @@ pub fn rescan_root(app: tauri::AppHandle) {
 mod tests {
     use super::*;
 
+    fn entry(id: &str, title: &str, open: bool) -> WindowEntry {
+        WindowEntry {
+            id: id.into(),
+            title: title.into(),
+            open,
+            colour: None,
+        }
+    }
+
+    /// A tab popped out of the window first labelled "work", since renamed in place to "job"; its
+    /// server is still keyed by the label it left with.
+    fn out_of_renamed() -> AppState {
+        let state = AppState::new();
+        state.servers.register_unserved_for_test("work:tab-x", 4321);
+        state.detached.lock().unwrap().insert(
+            "shell-detach:work:tab-x".into(),
+            LectorDetached {
+                origin_wid: "work".into(),
+                origin_title: "job".into(),
+                tab_label: "work:tab-x".into(),
+                port: 4321,
+            },
+        );
+        state
+    }
+
+    #[test]
+    fn a_renamed_and_closed_origin_is_found_by_its_title() {
+        let state = out_of_renamed();
+        let entries = [entry("job", "job", false)];
+        // Closing it is not removing it: its popped-out tab stays out.
+        assert!(state.take_orphaned_detached(&entries).is_empty());
+        assert_eq!(
+            state.resolve_origin("shell-detach:work:tab-x", &entries),
+            Some(("job".to_string(), false))
+        );
+        assert_eq!(
+            state.detached_tab_labels(),
+            HashSet::from(["job:tab-x".to_string()])
+        );
+        assert_eq!(state.servers.port("job:tab-x"), Some(4321), "same server");
+        assert_eq!(state.servers.port("work:tab-x"), None);
+    }
+
+    #[test]
+    fn an_origin_reopened_first_keeps_its_tab_popped_out() {
+        let state = out_of_renamed();
+        state.popped_out_of("job", "job");
+        assert_eq!(
+            state.detached_tab_labels(),
+            HashSet::from(["job:tab-x".to_string()])
+        );
+        assert_eq!(state.servers.port("job:tab-x"), Some(4321));
+    }
+
+    #[test]
+    fn a_new_window_on_the_freed_label_is_not_the_origin() {
+        let state = out_of_renamed();
+        state.popped_out_of("work", "work");
+        assert_eq!(
+            state.detached_tab_labels(),
+            HashSet::from(["work:tab-x".to_string()])
+        );
+        let entries = [entry("work", "work", true)];
+        assert_eq!(
+            state.resolve_origin("shell-detach:work:tab-x", &entries),
+            None
+        );
+        // With no window titled "job", the origin left the config.
+        assert_eq!(
+            state.take_orphaned_detached(&entries),
+            vec!["shell-detach:work:tab-x".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_rename_carries_into_the_popped_out_origin_titles() {
+        let state = out_of_renamed();
+        state.retitle_origins("job", "gig");
+        state.retitle_origins("other", "x");
+        assert_eq!(
+            state
+                .detached
+                .lock()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .origin_title,
+            "gig"
+        );
+    }
+
     #[test]
     fn toggling_the_digit_mode_seeds_a_missing_config_first() {
         let dir = std::env::temp_dir().join(format!("lector-digit-{}", std::process::id()));
@@ -970,6 +1141,7 @@ mod tests {
             "shell-detach:w1:tab-abc".into(),
             LectorDetached {
                 origin_wid: "w1".into(),
+                origin_title: "w1".into(),
                 tab_label: "w1:tab-abc".into(),
                 port: 8080,
             },
@@ -990,6 +1162,7 @@ mod tests {
             "shell-detach:w1:tab-a".into(),
             LectorDetached {
                 origin_wid: "w1".into(),
+                origin_title: "w1".into(),
                 tab_label: "w1:tab-a".into(),
                 port: 1234,
             },
@@ -1125,6 +1298,7 @@ mod tests {
             "shell-detach:w1:tab-b".into(),
             LectorDetached {
                 origin_wid: "w1".into(),
+                origin_title: "w1".into(),
                 tab_label: "w1:tab-b".into(),
                 port: 1234,
             },

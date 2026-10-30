@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn take_detached_from_takes_only_the_removed_origins_tabs() {
+    fn take_orphaned_detached_takes_only_the_removed_origins_tabs() {
         let state = AppState::new();
         let gone = "Gone".to_string();
         let kept = "Kept".to_string();
@@ -98,13 +98,20 @@ mod tests {
                 det.to_string(),
                 crate::commands::LectorDetached {
                     origin_wid: origin.clone(),
+                    origin_title: origin.clone(),
                     tab_label: format!("{origin}:tab-x"),
                     port: 0,
                 },
             );
         }
 
-        let taken = state.take_detached_from(&HashSet::from([gone.clone()]));
+        let entries = [shell_core::menu::WindowEntry {
+            id: kept.clone(),
+            title: kept.clone(),
+            open: false,
+            colour: None,
+        }];
+        let taken = state.take_orphaned_detached(&entries);
 
         assert_eq!(taken, vec!["d-gone".to_string()]);
         assert_eq!(
@@ -219,6 +226,7 @@ mod tests {
             "detached-window-1".to_string(),
             crate::commands::LectorDetached {
                 origin_wid: "W".to_string(),
+                origin_title: "W".to_string(),
                 tab_label: label.clone(),
                 port: state.servers.port(&label).unwrap_or(0),
             },

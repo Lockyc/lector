@@ -112,6 +112,25 @@ impl Servers {
         }
     }
 
+    /// Move `old`'s server to `new` — a popped-out tab whose origin came back under another window
+    /// label keeps the server its detached window is showing. A server already under `new` stops.
+    pub fn rekey(&self, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
+        let replaced = {
+            let mut live = self.live.lock().expect("servers lock");
+            match live.remove(old) {
+                Some(s) => live.insert(new.to_string(), s),
+                None => None,
+            }
+        };
+        // Outside the lock, as in `stop`.
+        if let Some(h) = replaced.and_then(|s| s.handle) {
+            h.shutdown();
+        }
+    }
+
     /// Stop every server whose label is not in `keep`. Called by `reload::reconcile` on both
     /// launch and config hot-reload: a removed tab must have its server shut down and threads
     /// joined, or every config edit leaks a watcher and a port.
@@ -188,7 +207,7 @@ impl Servers {
     /// registry still lists the label, but nothing answers on its port). Test-only: production
     /// code always inserts through `start()`, which never registers a `None` handle.
     #[cfg(test)]
-    fn register_unserved_for_test(&self, label: &str, port: u16) {
+    pub(crate) fn register_unserved_for_test(&self, label: &str, port: u16) {
         self.live
             .lock()
             .expect("servers lock")

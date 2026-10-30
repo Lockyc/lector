@@ -52,8 +52,9 @@ commands, config hot-reload.
   lifecycle (`windows.rs`), `run()`'s full setup (`lib.rs`), and the `validate`/`fmt` CLI.
 - **`crates/lector-config`** — the config parser: config-core's shared `Window` with lector's
   `LectorWindow` extras (a lector tab carries a `dir` — a local doc repo path — rather than a
-  `url`), `parse_and_validate` / `load_config`, `resolve_config_path`, identity/hash helpers, the
-  `WindowTabs` trait (`tab_views`/`startup_label`, labelled under the window's label).
+  `url`), `parse_and_validate` / `load_config`, `resolve_config_path`, the `hash` helper, the
+  `WindowTabs` trait (`tab_views`/`startup_label`, labelled under the window's label by
+  `shell_core::child_label`).
   Re-exports config-core's shared house formatter + colour parsing, the same way curator/warden do.
 
 The `[patch]` overrides for all four shared cores live in the **workspace-root `Cargo.toml`** (a
@@ -144,10 +145,10 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
 - **Windows are shell-core's `WindowSet`** (managed state), with `windows::LectorHost` building
   and tearing down a window's content. It owns each window's label (the sanitized title), which
   windows are open, the home surface and the quitting flag; a user-closed window stays listed and
-  stays closed across a reload. New Window… (the spine) and the banner's right-click Edit / Delete
-  Window… (`window_menu`) open shell-core's form and write the config through config-core's `edit`;
-  a rename retitles in place (`WindowSet::rename`). A user close of the last window quits
-  (`on_real_window_close`).
+  stays closed across a reload. New Window… and the banner's right-click Edit / Delete Window…
+  (`window_menu`) are shell-core's flow (`WindowSet::handle_menu`); `LectorHost::write` writes the
+  config through config-core's `edit`, and a rename retitles in place, `last_cfg` included. A user
+  close of the last window quits (`quit_on_last_close`).
 - **The home surface** (shell-core, shown by the `WindowSet`) is what a fresh install shows. Its
   "Create a starter config" button is `commands::shell_home_create_config`, calling
   `config_core::write_default_config` with the tracked `src/default-config.toml` template.

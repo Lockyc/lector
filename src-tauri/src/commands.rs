@@ -35,7 +35,7 @@
 //! serving anything else needs a per-caller gate (a curator-style `is_chrome_caller`).
 
 use crate::servers::Servers;
-use lector_config::{Density, TabView};
+use lector_config::{Density, TabDigitKeys, TabView};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -155,6 +155,9 @@ pub struct AppState {
     dark_mode: AtomicBool,
     /// Whole-app `auto_update` from the config, set on every clean load.
     auto_update: AtomicBool,
+    /// Whole-app `tab_digit_keys`, set on every clean load; the menu bar is rebuilt from it when a
+    /// window opens or closes, and the Cycle Tabs toggle writes its flip.
+    tab_digit_keys: Mutex<TabDigitKeys>,
     /// Every configured window's fixed identity (see [`WindowMeta`]), for the menu spine's Window
     /// submenu and reopening a closed window from it. Grows as `lib.rs` builds windows (at launch,
     /// via `reload_now`, and on a clean hot-reload) and shrinks only when a clean hot-reload drops a
@@ -179,6 +182,7 @@ impl AppState {
             sidebar_drag: AtomicBool::new(true),
             dark_mode: AtomicBool::new(false),
             auto_update: AtomicBool::new(true),
+            tab_digit_keys: Mutex::new(TabDigitKeys::default()),
             window_meta: Mutex::new(Vec::new()),
             detached: Mutex::new(HashMap::new()),
         }
@@ -295,11 +299,17 @@ impl AppState {
         sidebar_drag: bool,
         auto_update: bool,
         dark_mode: bool,
+        tab_digit_keys: TabDigitKeys,
     ) {
         *self.density.lock().expect("density lock") = density;
         self.sidebar_drag.store(sidebar_drag, Ordering::Relaxed);
         self.auto_update.store(auto_update, Ordering::Relaxed);
         self.dark_mode.store(dark_mode, Ordering::Relaxed);
+        *self.tab_digit_keys.lock().expect("tab_digit_keys lock") = tab_digit_keys;
+    }
+
+    pub fn tab_digit_keys(&self) -> TabDigitKeys {
+        *self.tab_digit_keys.lock().expect("tab_digit_keys lock")
     }
 
     pub fn dark_mode(&self) -> bool {
@@ -725,6 +735,14 @@ pub fn set_hole_rect(rect: RectArg, window: tauri::Window) -> Result<(), String>
 /// `lector_config`'s re-export — this crate never pins config-core directly, the same one-source
 /// rule as its other re-exported house helpers) — shell-core owns the surface but never touches
 /// config-core (the cores stay independent).
+/// Saves `tab_digit_keys` (the Tab menu's Cycle Tabs toggle), seeding the starter config first
+/// when there is no file. The watcher's reload then applies it.
+pub fn write_tab_digit_keys(path: &std::path::Path, mode: TabDigitKeys) -> Result<(), String> {
+    lector_config::write_default_config(path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;
+    lector_config::set_key(path, "tab_digit_keys", mode.as_str().into())
+        .map_err(|e| format!("config: {e}"))
+}
+
 #[tauri::command]
 pub fn shell_home_create_config(app: tauri::AppHandle) -> Result<(), String> {
     let path = lector_config::resolve_config_path();
@@ -775,6 +793,26 @@ pub fn rescan_root(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writing_the_digit_mode_seeds_a_missing_config_first() {
+        let dir = std::env::temp_dir().join(format!("lector-digit-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+        write_tab_digit_keys(&path, TabDigitKeys::Cycle).unwrap();
+        let src = std::fs::read_to_string(&path).unwrap();
+        // The starter's documentation survives; only the value changed.
+        assert!(
+            src.starts_with(DEFAULT_CONFIG.lines().next().unwrap()),
+            "{src}"
+        );
+        let (cfg, _) = lector_config::parse_and_validate(&src).unwrap();
+        assert!(cfg.tab_digit_keys.is_cycle());
+        write_tab_digit_keys(&path, TabDigitKeys::Jump).unwrap();
+        let (cfg, _) = lector_config::load_config(&path).unwrap();
+        assert!(!cfg.tab_digit_keys.is_cycle());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn tab_dto_live_reflects_the_registry_not_the_config() {

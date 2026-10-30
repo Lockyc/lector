@@ -77,8 +77,8 @@ sidebar shows an *Update available* bar with a one-click **Update & Relaunch**.
 - **Native navigation.** Mouse side-buttons drive back/forward through a tab's history, and a
   determinate progress bar tracks page loading — both alongside the sidebar's ◀ ▶ ⌂ nav pill.
 - **Keyboard tab navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle to the previous/next
-  tab and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to make **⌘1** / **⌘2**
-  cycle instead (jumps shift to **⌘3–⌘9**).
+  tab and **⌘1–⌘9** jump to a position; **Tab ▸ Cycle Tabs with ⌘1/⌘2** (or `tab_digit_keys =
+  "cycle"`) makes **⌘1** / **⌘2** cycle instead (jumps shift to **⌘3–⌘9**).
 
 ## Config
 

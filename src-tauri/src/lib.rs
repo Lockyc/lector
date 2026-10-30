@@ -63,6 +63,7 @@ fn apply_config(
         cfg.sidebar_drag,
         cfg.auto_update,
         cfg.dark_mode,
+        cfg.tab_digit_keys,
     );
     for m in state.window_meta() {
         if let Some(win) = app.get_window(&m.id) {
@@ -177,20 +178,65 @@ fn select_startup_tabs(app: &tauri::AppHandle, cfg: &lector_config::Config, buil
     }
 }
 
-/// Emit an event to just the focused window's chrome sidebar — the menu spine's ⌘W (Close Tab)
-/// and Check for Updates… both act on whichever window has key focus. Modelled on curator's
-/// equivalent (the chrome is the window's main webview, so its label *is* the window id).
+/// The `nav-tab` payload: step `dir` from `from`, a popped-out tab, or else from the highlight.
+#[derive(Clone, serde::Serialize)]
+struct NavTab {
+    dir: i32,
+    from: Option<String>,
+}
+
+/// Runs a spine command in the window `shell_core::menu::route` chose. A window's chrome is its
+/// main webview, so the target label *is* the chrome's.
 ///
-/// **This target only scopes anything because `chrome.js` binds its listeners to the chrome
+/// **An emit here only scopes anything because `chrome.js` binds its listeners to the chrome
 /// webview.** A JS `listen()` with no target registers `EventTarget::Any`, which tauri delivers to
 /// regardless of the label here — see the per-window-events footgun in CLAUDE.md.
-fn emit_to_focused_chrome<S: serde::Serialize + Clone>(
-    app: &tauri::AppHandle,
-    event: &str,
-    payload: S,
-) {
-    if let Some(win) = app.get_focused_window() {
-        let _ = app.emit_to(win.label(), event, payload);
+fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
+    use shell_core::menu::{SpineAction, TabNavAction};
+    let target = routed.target.as_str();
+    if routed.from_detached.is_some() {
+        if let Some(w) = app.get_window(target) {
+            let _ = w.set_focus();
+        }
+    }
+    let from = routed.from_detached.as_deref().and_then(|l| {
+        let state = app.state::<commands::AppState>();
+        let detached = state.detached.lock().expect("detached lock");
+        detached.get(l).map(|d| d.tab_label.clone())
+    });
+    let emit = |event: &str| {
+        let _ = app.emit_to(target, event, ());
+    };
+    match routed.action {
+        SpineAction::Nav(TabNavAction::Next) => {
+            let _ = app.emit_to(target, "nav-tab", NavTab { dir: 1, from });
+        }
+        SpineAction::Nav(TabNavAction::Prev) => {
+            let _ = app.emit_to(target, "nav-tab", NavTab { dir: -1, from });
+        }
+        SpineAction::Nav(TabNavAction::Jump(n)) => {
+            let _ = app.emit_to(target, "jump-tab", n);
+        }
+        // ⌘W unloads the ACTIVE TAB — it does not close the window. The chrome owns which tab is
+        // active and the dot repaint, so it drives unload_tab off this event.
+        SpineAction::CloseTab => emit("close-tab"),
+        // Closing a pop-out window docks its tab: its `Destroyed` handler runs `redock`.
+        SpineAction::DockPoppedOut | SpineAction::CloseWindow => {
+            if let Some(w) = app.get_window(target) {
+                let _ = w.close();
+            }
+        }
+        SpineAction::PopOutTab => emit("pop-out-tab"),
+        // ⌘⇧F: the content webview may hold first responder, so make the chrome the key view
+        // before it focuses its field.
+        SpineAction::FindInSidebar => {
+            if let Some(chrome) = app.get_webview(target) {
+                let _ = chrome.set_focus();
+            }
+            emit("find-in-sidebar");
+        }
+        // chrome-core owns self-update; forward to its checkForUpdateNow().
+        SpineAction::CheckUpdates => emit("check-update"),
     }
 }
 
@@ -224,6 +270,8 @@ fn open_or_focus_window(app: &tauri::AppHandle, window_id: &str) {
     let entries = reload::window_entries(app, &meta);
     let path = lector_config::resolve_config_path();
     reload::reconcile_home(app, &entries, &path.to_string_lossy(), path.exists(), None);
+    // The Window submenu's tick and "(closed)" label (muda also flipped the clicked item's tick).
+    refresh_menu(app);
 }
 
 /// Return a popped-out tab to its origin window when its detached window closes — the `on_close`
@@ -294,9 +342,8 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
 
     // Re-render the origin chrome so the returned row loses its ⤢ detached mark and reflects the new
     // active tab. `config-reloaded` drives the chrome's refresh() (a get_tabs re-fetch); emit_to
-    // targets only that window's chrome (`emit_to_focused_chrome`'s sibling for a specific label
-    // rather than the focused one — and, like it, scoped only in concert with chrome.js's
-    // webview-bound listeners). If the origin was just reopened its
+    // targets only that window's chrome (scoped only in concert with chrome.js's webview-bound
+    // listeners, as `on_spine_action`'s emits are). If the origin was just reopened its
     // fresh mount already refreshes, so a missed emit self-corrects.
     let _ = app.emit_to(origin_wid.as_str(), "config-reloaded", ());
 }
@@ -332,8 +379,8 @@ pub(crate) fn apply_clean_load(
     for m in state.window_meta() {
         let _ = app.emit_to(m.id.as_str(), "config-reloaded", ());
     }
+    refresh_menu(app);
     let entries = reload::window_entries(app, &state.window_meta());
-    let _ = install_app_menu(app, config_path, cfg.tab_digit_keys, &entries);
     reload::reconcile_home(
         app,
         &entries,
@@ -360,53 +407,42 @@ pub(crate) fn surface_load_error(app: &tauri::AppHandle, msg: &str, config_path:
     );
 }
 
-/// Build and install the app menu: the shared spine (App/Config/Window) plus lector's own Tab
-/// submenu — shell-core's tab-nav block (⌘⇧[ / ⌘⇧] , ⌘1–9 jumps, and the ⌘1/⌘2 cycle aliases
-/// when `mode` asks for them) around the spine's Close Tab (⌘W), Pop Out Tab (⌘⇧O) and Find in
-/// Sidebar (⌘⇧F).
+/// Build and install the app menu from the current state: shell-core's App, Edit, Tab, Config and
+/// Window submenus (lector adds no items of its own).
 ///
-/// Called at setup **and again on every clean hot-reload**, so a `tab_digit_keys` flip applies
-/// without a relaunch — matching warden and curator.
-fn install_app_menu(
-    app: &tauri::AppHandle,
-    config_path: &std::path::Path,
-    mode: lector_config::TabDigitKeys,
-    window_entries: &[shell_core::menu::WindowEntry],
-) -> tauri::Result<()> {
-    let spine = shell_core::menu::build_spine(
+/// Rebuilt on every clean load (a `tab_digit_keys` flip applies without a relaunch) and whenever a
+/// window opens or closes (the Window submenu's ticks and "(closed)" labels).
+fn refresh_menu(app: &tauri::AppHandle) {
+    let state = app.state::<commands::AppState>();
+    let entries = reload::window_entries(app, &state.window_meta());
+    let built = shell_core::menu::build_spine(
         app,
         shell_core::menu::SpineConfig {
             app_name: "lector",
-            config_path,
-            windows: window_entries,
+            windows: &entries,
         },
         env!("CARGO_PKG_VERSION"),
         env!("BUILD_GIT_SHA"),
         env!("BUILD_DATE"),
-    )?;
-    let nav = shell_core::menu::build_tab_nav(app, mode.is_cycle())?;
-    let mut tab_menu = tauri::menu::SubmenuBuilder::new(app, "Tab");
-    for it in &nav.nav {
-        tab_menu = tab_menu.item(it);
+    )
+    .and_then(|spine| {
+        let cycle = state.tab_digit_keys().is_cycle();
+        let tab_menu = shell_core::menu::build_tab_menu(app, &spine, cycle, &[])?;
+        let items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![
+            &spine.submenus[0], // App
+            &spine.edit,
+            &tab_menu,
+            &spine.submenus[1], // Config
+            &spine.submenus[2], // Window
+        ];
+        tauri::menu::MenuBuilder::new(app).items(&items).build()
+    });
+    match built {
+        Ok(menu) => {
+            let _ = app.set_menu(menu);
+        }
+        Err(e) => eprintln!("menu build failed: {e}"),
     }
-    tab_menu = tab_menu
-        .separator()
-        .item(&spine.close_tab)
-        .item(&spine.pop_out_tab)
-        .item(&spine.find_in_sidebar)
-        .separator();
-    for it in &nav.jumps {
-        tab_menu = tab_menu.item(it);
-    }
-    let tab_menu = tab_menu.build()?;
-    let items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![
-        &spine.submenus[0], // App
-        &tab_menu,
-        &spine.submenus[1], // Config
-        &spine.submenus[2], // Window
-    ];
-    app.set_menu(tauri::menu::MenuBuilder::new(app).items(&items).build()?)?;
-    Ok(())
 }
 
 pub fn run() {
@@ -446,11 +482,8 @@ pub fn run() {
             select_startup_tabs(app.handle(), &cfg, &built);
             let state = app.state::<commands::AppState>();
 
-            // The menu spine: App/Config/Window are shared (shell-core), Tab is lector's own — see
-            // `install_app_menu`'s doc comment for what it holds and why it's rebuilt on every
-            // clean hot-reload, not just here at setup.
+            refresh_menu(app.handle());
             let window_entries = reload::window_entries(app.handle(), &state.window_meta());
-            install_app_menu(app.handle(), &path, cfg.tab_digit_keys, &window_entries)?;
 
             let cfg_for_menu = path.clone();
             app.on_menu_event(move |app, event| {
@@ -459,57 +492,30 @@ pub fn run() {
                 if shell_core::menu::handle_spine_event(id, &cfg_for_menu) {
                     return;
                 }
-                // Tab navigation (⌘⇧[ / ⌘⇧] , ⌘1–9, and the ⌘1/⌘2 cycle aliases). shell-core routes
-                // the id, so this handler is mode-blind — the aliases arrive as plain Next/Prev. The
-                // chrome resolves the target row and selects it through the normal click path, so a
-                // cold tab still starts its server on demand.
-                if let Some(action) = shell_core::menu::tab_nav_action(id) {
-                    use shell_core::menu::TabNavAction;
-                    match action {
-                        TabNavAction::Next => emit_to_focused_chrome(app, "nav-tab", 1i32),
-                        TabNavAction::Prev => emit_to_focused_chrome(app, "nav-tab", -1i32),
-                        TabNavAction::Jump(n) => emit_to_focused_chrome(app, "jump-tab", n),
+                // Tab ▸ Cycle Tabs: save the flip; the watcher's reload rebuilds the menu. muda
+                // already flipped the tick, so a failed write rebuilds to undo it.
+                if id == shell_core::menu::ids::TAB_DIGIT_CYCLE {
+                    let next = app.state::<commands::AppState>().tab_digit_keys().toggled();
+                    if let Err(e) = commands::write_tab_digit_keys(&cfg_for_menu, next) {
+                        surface_load_error(app, &e, &cfg_for_menu);
+                        refresh_menu(app);
                     }
                     return;
                 }
-                match id {
-                    // chrome-core owns self-update; forward to its checkForUpdateNow().
-                    shell_core::menu::ids::CHECK_UPDATES => {
-                        emit_to_focused_chrome(app, "check-update", ())
-                    }
-                    // ⌘W unloads the ACTIVE TAB — it does not close the window. The chrome owns
-                    // which tab is active and the dot repaint, so it drives unload_tab off this
-                    // event (warden's model, now the family standard).
-                    shell_core::menu::ids::CLOSE_TAB => {
-                        emit_to_focused_chrome(app, "close-tab", ())
-                    }
-                    // ⌘⇧O pops the focused window's active tab out into its own window. The chrome owns
-                    // which tab is active, so it drives pop_out_tab off this event (routed to only the
-                    // focused window's chrome, the same per-window emit pattern as close-tab).
-                    shell_core::menu::ids::POP_OUT_TAB => {
-                        emit_to_focused_chrome(app, "pop-out-tab", ())
-                    }
-                    // ⌘⇧F: the content webview may hold first responder, so make the chrome (the
-                    // window's main webview, same label) the key view before it focuses its field.
-                    shell_core::menu::ids::FIND_IN_SIDEBAR => {
-                        if let Some(chrome) = app
-                            .get_focused_window()
-                            .and_then(|w| app.get_webview(w.label()))
-                        {
-                            let _ = chrome.set_focus();
-                        }
-                        emit_to_focused_chrome(app, "find-in-sidebar", ())
-                    }
-                    shell_core::menu::ids::CLOSE_WINDOW => {
-                        if let Some(win) = app.get_focused_window() {
-                            let _ = win.close();
-                        }
-                    }
-                    id => {
-                        if let Some(wid) = shell_core::menu::selected_window(id) {
-                            open_or_focus_window(app, wid);
-                        }
-                    }
+                if let Some(wid) = shell_core::menu::selected_window(id) {
+                    open_or_focus_window(app, wid);
+                    return;
+                }
+                let Some(focused) = app.get_focused_window() else {
+                    return;
+                };
+                let origin_of = |l: &str| {
+                    let state = app.state::<commands::AppState>();
+                    let detached = state.detached.lock().expect("detached lock");
+                    detached.get(l).map(|d| d.origin_wid.clone())
+                };
+                if let Some(routed) = shell_core::menu::route(id, focused.label(), origin_of) {
+                    on_spine_action(app, routed);
                 }
             });
 
@@ -598,6 +604,21 @@ pub fn run() {
         // detached window's teardown doesn't reopen its origin mid-quit (see `redock`).
         if let tauri::RunEvent::ExitRequested { .. } = event {
             mark_quitting();
+        }
+        // A closed config window: the Window submenu's tick becomes "(closed)". Pop-outs and the
+        // home surface aren't listed there.
+        if let tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Destroyed,
+            ..
+        } = &event
+        {
+            if !is_quitting()
+                && !shell_core::detach::is_detached_label(label)
+                && label != shell_core::home::HOME_LABEL
+            {
+                refresh_menu(app_handle);
+            }
         }
         // Shut down every live server and join its threads on quit — otherwise a compositor
         // serve loop (and its watcher) outlives the app.

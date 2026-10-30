@@ -127,23 +127,18 @@ lector adopted shell-core's `menu::build_spine` and `home::{home_state, show_hom
 and chrome-core's `appName` field, from scratch — it never had its own menu, error window, or
 launcher to delete, so it's the cleanest case of the three apps consuming these.
 
-- **lector contributes no app-specific menu items.** The App, Config, and Window submenus are the
-  shared spine (`shell_core::menu::build_spine`); lector's own **Tab** submenu is built entirely
-  from shell-core pieces too — `shell_core::menu::build_tab_nav` (⌘⇧[ / ⌘⇧] cycle, ⌘1–9 jump, and
-  the ⌘1/⌘2 cycle aliases in `cycle` mode — see *Keyboard tab navigation* below) around the spine's
-  `Close Tab` (⌘W), `Pop Out Tab` (⌘⇧O) and `Find in Sidebar` (⌘⇧F). curator's Tab submenu additionally has Reload Tab /
-  Reset All Tabs / Open Developer Tools; warden's has Reopen Last Closed — none of *those* map onto
-  lector: **compositor's file watcher already live-reloads every open tab on save**, so a manual
+- **lector contributes no app-specific menu items.** App, Edit, Config and Window come from
+  `shell_core::menu::build_spine` and the whole **Tab** submenu from `build_tab_menu` with no app
+  groups. curator's Tab submenu adds Reload Tab / Reset All Tabs / Open Developer Tools; warden's
+  adds Split and its session items — none of *those* map onto lector: **compositor's file watcher already live-reloads every open tab on save**, so a manual
   "Reload Tab" item would be a no-op button; there is no per-tab "session" to reset (a compositor
   `SiteServer` has no state beyond the served files); and a release build has no inspector to open
 (tauri's `devtools` feature is off — a debug build's right-click Inspect Element is the route).
   Other tab-scoped actions (reveal-in-Finder, copy the served URL, open the repo dir) are open
   roadmap, not excluded — the submenu is just empty of them for now.
-- **The whole menu is built by one function, `install_app_menu` (`lib.rs`), called at setup AND
-  again on every clean hot-reload** — not just once at launch like the spine/home-surface adoption
-  originally left it. This is what lets `tab_digit_keys` (below) flip live: a hot-reload's
-  `install_app_menu` call rebuilds the Tab submenu in the new mode and the Window submenu's entries
-  in the same pass, without a relaunch.
+- **The whole menu is built by one function, `refresh_menu` (`lib.rs`), from `AppState`** — at
+  setup, on every clean load (so `tab_digit_keys`, below, flips live), and whenever a config window
+  opens or is destroyed (the Window submenu's ticks and "(closed)" labels).
 - **The home surface** (`shell_core::home::{home_state, show_home, close_home}`) is
   what a fresh install shows: before this, lector built zero windows and no menu when
   `~/.config/lector/config.toml` didn't exist, so it launched to a live, invisible, unrecoverable
@@ -155,18 +150,16 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
 
 ## Keyboard tab navigation
 
-The Tab menu's nav block (⌘⇧[ / ⌘⇧] cycle, ⌘1–9 jump) is `shell_core::menu::build_tab_nav`,
-shared with warden and curator — see *The menu spine* above for where it's spliced into lector's
-Tab submenu and rebuilt on hot-reload. **`tab_digit_keys`** (`Config`, whole-app, no per-window
-cascade) picks what ⌘1/⌘2 do: default `jump` — ⌘1–⌘9 jump straight to a tab position; `cycle`
-makes ⌘1 next tab / ⌘2 previous and shifts the jump items to ⌘3–⌘9. An unrecognised token is a
-load error (`config_core::TabDigitKeys`'s own serde impl), not a silent fallback.
+**`tab_digit_keys`** (`Config`, whole-app, no per-window cascade) picks what ⌘1/⌘2 do: default
+`jump` — ⌘1–⌘9 jump straight to a tab position; `cycle` makes ⌘1 next tab / ⌘2 previous and
+shifts the jump items to ⌘3–⌘9. An unrecognised token is a load error (`config_core::TabDigitKeys`'s
+own serde impl), not a silent fallback. **Tab ▸ Cycle Tabs with ⌘1/⌘2** writes the flip
+(`commands::write_tab_digit_keys`, seeding the starter config first); the watcher's reload applies it.
 
-- **The menu handler is mode-blind.** `shell_core::menu::tab_nav_action` resolves a fired item's id
-  to `Next`/`Prev`/`Jump(n)` — the ⌘1/⌘2 cycle aliases collapse onto `Next`/`Prev` before lector
-  ever sees them — so `lib.rs`'s `on_menu_event` just emits `nav-tab` (payload ±1) or `jump-tab`
-  (payload = 1-based position) to the focused window's chrome, exactly like `close-tab`/
-  `pop-out-tab`.
+- **The menu handler is mode-blind.** `shell_core::menu::route` resolves a fired id to a
+  `SpineAction` and the window it acts on (from a popped-out window: its origin) — the cycle aliases
+  arrive as plain Next/Prev — and `on_spine_action` emits `nav-tab` (`{dir, from}`) or `jump-tab`
+  (1-based position) to that window's chrome, like `close-tab`/`pop-out-tab`.
 - **The chrome routes through the normal click path.** `src/chrome.js`'s `nav-tab`/`jump-tab`
   listeners call chrome-core's `selectByOffset`/`selectByIndex`, so a cold tab that a cycle or
   jump lands on still starts its `compositor serve` loop on demand — nothing here bypasses
@@ -301,7 +294,7 @@ weight** — the reason and the silent-failure modes are on those entries in `sr
 
 ## Per-window events: scope BOTH sides, the emit target alone does nothing
 
-`emit_to_focused_chrome` (and the specific-label `emit_to` beside it in `lib.rs`) address a chrome
+`on_spine_action` (and `redock`'s `emit_to`, both in `lib.rs`) address a chrome
 by its webview label — but Tauri's dispatch short-circuits any listener registered as
 `EventTarget::Any` *past* the emit's target filter (`match_any_or_filter`, tauri
 `src/event/listener.rs`), and a bare JS `listen(event, handler)` registers exactly that.

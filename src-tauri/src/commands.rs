@@ -311,8 +311,7 @@ impl AppState {
 
     /// Carry a window's in-place title or colour change into the last clean load ahead of its
     /// reload echo, so [`window_cfg`](Self::window_cfg) and the `WindowSet` label lookup see the
-    /// new title. A rename patches the one window whose title the set no longer lists (`listed`);
-    /// with several unlisted (another edit in flight) nothing is patched and the echo settles it.
+    /// new title (`lector_config::retitle_window`; `listed` = the set still lists the title).
     pub fn retitle_window(
         &self,
         title: &str,
@@ -320,26 +319,7 @@ impl AppState {
         listed: impl Fn(&str) -> bool,
     ) {
         let mut cfg = self.last_cfg.lock().expect("last_cfg lock");
-        let idx = cfg
-            .windows
-            .iter()
-            .position(|w| w.title.trim() == title.trim())
-            .or_else(|| {
-                let mut unlisted = cfg
-                    .windows
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, w)| !listed(&w.title))
-                    .map(|(i, _)| i);
-                match (unlisted.next(), unlisted.next()) {
-                    (Some(i), None) => Some(i),
-                    _ => None,
-                }
-            });
-        if let Some(w) = idx.map(|i| &mut cfg.windows[i]) {
-            w.title = title.to_string();
-            w.colour = colour;
-        }
+        lector_config::retitle_window(&mut cfg.windows, title, colour, listed);
     }
 
     /// The last cleanly loaded `[[window]]` titled `title` (trimmed).

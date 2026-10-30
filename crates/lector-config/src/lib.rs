@@ -4,8 +4,9 @@
 //! config-core crate, re-exported here so the app (`src-tauri`) uses
 //! `lector_config::{Colour, format_file, format_str}`.
 pub use config_core::{
-    discover_projects, fmt_cli, format_file, format_str, set_key, write_default_config, Colour,
-    ColourError, Density, DiscoveredProject, Group, RootDir, SeedError, TabDigitKeys, Warning,
+    discover_projects, edit, fmt_cli, format_file, format_str, set_key, toml_edit,
+    write_default_config, Colour, ColourError, Density, DiscoveredProject, Group, RootDir,
+    SeedError, TabDigitKeys, Warning, WindowError,
 };
 
 pub mod hash;
@@ -70,14 +71,14 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+/// One `[[window]]`: config-core's shared keys (`title`, size, `colour`, `open_on_start`, groups)
+/// plus lector's own [`LectorWindow`].
+pub type WindowConfig = config_core::Window<Tab, LectorWindow>;
+
+/// lector's own `[[window]]` keys, beside config-core's shared ones.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct WindowConfig {
-    pub title: String,
-    #[serde(default = "config_core::default_window_width")]
-    pub width: u32,
-    #[serde(default = "config_core::default_window_height")]
-    pub height: u32,
+pub struct LectorWindow {
     /// Which tab is active when this window launches. `false`/unset opens the first `load_on_open`
     /// (loaded) tab, else the blank background — the first tab isn't always loaded, so it isn't
     /// forced. `true` opens the first tab even if it isn't loaded. Titles are display labels, not
@@ -85,15 +86,9 @@ pub struct WindowConfig {
     /// title — the warden/family way is that title never selects a tab).
     #[serde(default)]
     pub open_on_launch: bool,
-    /// Optional per-window accent colour (`#rgb` or `#rrggbb`). The chrome shows it as a
-    /// name banner + a faint tint, giving each window an at-a-glance identity. Omit → neutral.
-    #[serde(default)]
-    pub colour: Option<String>,
     /// Loose (ungrouped) tabs. They render in a leading headerless section, before any group.
     #[serde(default, rename = "tab")]
     pub tabs: Vec<Tab>,
-    #[serde(default, rename = "group")]
-    pub groups: Vec<Group<Tab>>,
     #[serde(default, rename = "root")]
     pub roots: Vec<RawRoot>,
 }
@@ -126,25 +121,27 @@ pub struct Tab {
     pub load_on_open: bool,
 }
 
-/// True for a `#rgb` or `#rrggbb` hex colour — the forms the chrome banner accepts. Delegates to
-/// the shared `config_core` parser so all three apps validate accent colours identically.
-fn is_hex_colour(s: &str) -> bool {
-    config_core::Colour::parse(s).is_ok()
-}
-
 #[derive(Debug)]
 pub enum ConfigError {
     Io(std::io::Error),
     Parse(toml::de::Error),
+    /// A shared `[[window]]` / group key failed config-core's `validate_windows`.
+    Window(WindowError),
     EmptyField(&'static str),
-    DuplicateWindowTitle(String),
-    DuplicateGroupName { window: String, name: String },
-    InvalidWindowSize { width: u32, height: u32 },
-    InvalidColour { title: String, colour: String },
-    EmptyRootDir { window: String },
-    EmptyRootName { window: String },
-    InvalidRootDepth { window: String, depth: u32 },
-    DuplicateSection { window: String, name: String },
+    EmptyRootDir {
+        window: String,
+    },
+    EmptyRootName {
+        window: String,
+    },
+    InvalidRootDepth {
+        window: String,
+        depth: u32,
+    },
+    DuplicateSection {
+        window: String,
+        name: String,
+    },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -152,17 +149,8 @@ impl std::fmt::Display for ConfigError {
         match self {
             ConfigError::Io(e) => write!(f, "cannot read config: {e}"),
             ConfigError::Parse(e) => write!(f, "invalid TOML: {e}"),
+            ConfigError::Window(e) => write!(f, "{e}"),
             ConfigError::EmptyField(field) => write!(f, "empty {field}"),
-            ConfigError::DuplicateWindowTitle(t) => write!(f, "duplicate window title: {t}"),
-            ConfigError::DuplicateGroupName { window, name } => {
-                write!(f, "window {window:?} has duplicate group name: {name:?}")
-            }
-            ConfigError::InvalidWindowSize { width, height } => {
-                write!(f, "window size must be positive, got {width}×{height}")
-            }
-            ConfigError::InvalidColour { title, colour } => {
-                write!(f, "window \"{title}\" has invalid colour: {colour}")
-            }
             ConfigError::EmptyRootDir { window } => {
                 write!(f, "window {window:?} has a root with an empty dir")
             }
@@ -194,36 +182,18 @@ fn validate_tab(tab: &Tab) -> Result<(), ConfigError> {
 
 pub fn parse_and_validate(src: &str) -> Result<(Config, Vec<Warning>), ConfigError> {
     let cfg: Config = toml::from_str(src).map_err(ConfigError::Parse)?;
-    let mut seen_titles = std::collections::HashSet::new();
+    config_core::validate_windows(&cfg.windows).map_err(ConfigError::Window)?;
     let mut warnings: Vec<Warning> = Vec::new();
     for w in &cfg.windows {
-        if w.title.trim().is_empty() {
-            return Err(ConfigError::EmptyField("title"));
-        }
-        if !seen_titles.insert(w.title.clone()) {
-            return Err(ConfigError::DuplicateWindowTitle(w.title.clone()));
-        }
-        if w.width == 0 || w.height == 0 {
-            return Err(ConfigError::InvalidWindowSize {
-                width: w.width,
-                height: w.height,
-            });
-        }
-        if let Some(colour) = &w.colour {
-            if !is_hex_colour(colour) {
-                return Err(ConfigError::InvalidColour {
-                    title: w.title.clone(),
-                    colour: colour.clone(),
-                });
-            }
-        }
-        // Group names are unique per window. Tab *titles* are not checked — they're display
-        // labels, never an address (identity is the dir-hash label, namespaced per window), so
-        // duplicates are allowed (the warden/family way). A dir repeated within a window is
-        // non-fatal (the labels still disambiguate) but warned once. Per-window, not global:
-        // labels are namespaced `{window_id}:{dir_hash}`, so the same repo in two windows is no
-        // collision — and it's a supported pattern (one repo, two windows).
-        let mut group_names = std::collections::HashSet::new();
+        // Tab *titles* are not checked — they're display labels, never an address (identity is
+        // the dir-hash label, namespaced per window), so duplicates are allowed (the warden/family
+        // way). A dir repeated within a window is non-fatal (the labels still disambiguate) but
+        // warned once. Per-window, not global: labels are namespaced `{window_label}:{dir_hash}`,
+        // so the same repo in two windows is no collision — and it's a supported pattern (one
+        // repo, two windows). Group names are already unique (`validate_windows`); a root's
+        // section name must not reuse one.
+        let mut group_names: std::collections::HashSet<String> =
+            w.groups.iter().map(|g| g.name.trim().to_string()).collect();
         let mut seen_dirs = std::collections::HashSet::new();
         let mut warned_dirs = std::collections::HashSet::new();
         let window_title = w.title.clone();
@@ -247,24 +217,15 @@ pub fn parse_and_validate(src: &str) -> Result<(Config, Vec<Warning>), ConfigErr
             }
             Ok(())
         };
-        for tab in &w.tabs {
+        for tab in w
+            .extra
+            .tabs
+            .iter()
+            .chain(w.groups.iter().flat_map(|g| &g.tabs))
+        {
             check_tab(tab)?;
         }
-        for group in &w.groups {
-            if group.name.trim().is_empty() {
-                return Err(ConfigError::EmptyField("name"));
-            }
-            if !group_names.insert(group.name.trim().to_string()) {
-                return Err(ConfigError::DuplicateGroupName {
-                    window: w.title.clone(),
-                    name: group.name.clone(),
-                });
-            }
-            for tab in &group.tabs {
-                check_tab(tab)?;
-            }
-        }
-        for raw in &w.roots {
+        for raw in &w.extra.roots {
             let rd = config_core::resolve_root_dir(raw.name.as_deref(), &raw.dir, raw.depth)
                 .map_err(|e| match e {
                     config_core::RootError::EmptyDir => ConfigError::EmptyRootDir {
@@ -372,21 +333,49 @@ fn dir_label(dir: &str) -> String {
     )
 }
 
-impl WindowConfig {
+/// A window's tabs. A trait because [`WindowConfig`] is config-core's type; every label is
+/// namespaced under `window_label`, the window's Tauri label from shell-core's `WindowSet`.
+pub trait WindowTabs {
     /// Flatten this window's loose tabs + groups → ordered tabs with stable labels (file order:
     /// loose tabs first as a headerless section, then each group).
-    pub fn tab_views(&self) -> Vec<TabView> {
-        let wid = crate::identity::window_id(&self.title);
+    fn tab_views(&self, window_label: &str) -> Vec<TabView>;
+    /// Curated tab views, then this window's discovered projects as `tree: true` views. A
+    /// discovered project whose label (canonicalized-dir identity) already appears is dropped — a
+    /// curated tab at the same repo shadows it, and a repo reachable via two roots lands once
+    /// (first wins).
+    fn tab_views_with_discovered(
+        &self,
+        window_label: &str,
+        discovered: &[config_core::DiscoveredProject],
+    ) -> Vec<TabView>;
+    /// This window's roots, validated + resolved to config-core `RootDir`s. Infallible here because
+    /// `parse_and_validate` already rejected any invalid root; a stray invalid one is silently
+    /// skipped rather than panicking a live reconcile.
+    fn resolved_roots(&self) -> Vec<config_core::RootDir>;
+    /// Label of the tab to make active on launch. `false`/unset: the first `load_on_open` (loaded)
+    /// tab, else `None` (blank) — the first tab isn't always loaded, so it isn't forced. `true`:
+    /// the first tab even if cold.
+    fn startup_label(&self, window_label: &str) -> Option<String>;
+}
+
+impl WindowTabs for WindowConfig {
+    fn tab_views(&self, window_label: &str) -> Vec<TabView> {
+        let wid = window_label;
         let mut views = Vec::new();
         let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         // Loose tabs (group `None`) first, then each group's tabs (group `Some(name)`), all in
         // file order, sharing one dir-label dedup map so duplicate dirs across the window still
         // get distinct labels.
-        let entries = self.tabs.iter().map(|t| (t, Option::<String>::None)).chain(
-            self.groups
-                .iter()
-                .flat_map(|g| g.tabs.iter().map(move |t| (t, Some(g.name.clone())))),
-        );
+        let entries = self
+            .extra
+            .tabs
+            .iter()
+            .map(|t| (t, Option::<String>::None))
+            .chain(
+                self.groups
+                    .iter()
+                    .flat_map(|g| g.tabs.iter().map(move |t| (t, Some(g.name.clone())))),
+            );
         for (tab, group) in entries {
             let base = dir_label(&tab.dir);
             let n = seen.entry(base.clone()).or_insert(0);
@@ -397,7 +386,7 @@ impl WindowConfig {
             };
             *n += 1;
             views.push(TabView {
-                label: crate::identity::namespaced(&wid, &within),
+                label: crate::identity::namespaced(wid, &within),
                 group,
                 title: tab.title.clone(),
                 dir: tab.dir.clone(),
@@ -409,16 +398,12 @@ impl WindowConfig {
         views
     }
 
-    /// Curated tab views, then this window's discovered projects as `tree: true` views. A
-    /// discovered project whose label (canonicalized-dir identity) already appears is dropped — a
-    /// curated tab at the same repo shadows it, and a repo reachable via two roots lands once
-    /// (first wins).
-    pub fn tab_views_with_discovered(
+    fn tab_views_with_discovered(
         &self,
+        window_label: &str,
         discovered: &[config_core::DiscoveredProject],
     ) -> Vec<TabView> {
-        let wid = crate::identity::window_id(&self.title);
-        let mut views = self.tab_views();
+        let mut views = self.tab_views(window_label);
         let mut seen: std::collections::HashSet<String> =
             views.iter().map(|v| v.label.clone()).collect();
         for proj in discovered {
@@ -426,7 +411,7 @@ impl WindowConfig {
             // Compare namespaced labels, matching how `seen` was seeded from curated views (whose
             // labels already carry the `wid:` prefix) — comparing bare `base` against those would
             // never collide and defeat the dedup entirely.
-            let label = crate::identity::namespaced(&wid, &base);
+            let label = crate::identity::namespaced(window_label, &base);
             if !seen.insert(label.clone()) {
                 continue; // shadowed by a curated tab or an earlier root
             }
@@ -448,22 +433,17 @@ impl WindowConfig {
         views
     }
 
-    /// This window's roots, validated + resolved to config-core `RootDir`s. Infallible here because
-    /// `parse_and_validate` already rejected any invalid root; a stray invalid one is silently
-    /// skipped rather than panicking a live reconcile.
-    pub fn resolved_roots(&self) -> Vec<config_core::RootDir> {
-        self.roots
+    fn resolved_roots(&self) -> Vec<config_core::RootDir> {
+        self.extra
+            .roots
             .iter()
             .filter_map(|r| config_core::resolve_root_dir(r.name.as_deref(), &r.dir, r.depth).ok())
             .collect()
     }
 
-    /// Label of the tab to make active on launch. `false`/unset: the first `load_on_open` (loaded)
-    /// tab, else `None` (blank) — the first tab isn't always loaded, so it isn't forced. `true`:
-    /// the first tab even if cold.
-    pub fn startup_label(&self) -> Option<String> {
-        let views = self.tab_views();
-        if self.open_on_launch {
+    fn startup_label(&self, window_label: &str) -> Option<String> {
+        let views = self.tab_views(window_label);
+        if self.extra.open_on_launch {
             views.first().map(|v| v.label.clone())
         } else {
             views
@@ -498,7 +478,7 @@ load_on_open = true
     fn parses_a_valid_config() {
         let (cfg, warnings) = parse_and_validate(VALID).unwrap();
         assert_eq!(cfg.windows.len(), 1);
-        assert_eq!(cfg.windows[0].tabs[0].dir, "~/Developer/homelab");
+        assert_eq!(cfg.windows[0].extra.tabs[0].dir, "~/Developer/homelab");
         assert_eq!(cfg.windows[0].groups[0].tabs[0].title, "compositor");
         assert!(cfg.windows[0].groups[0].tabs[0].load_on_open);
         // A dir that doesn't exist warns (see rejects/warns tests) but never errors.
@@ -527,34 +507,29 @@ load_on_open = true
     }
 
     #[test]
-    fn rejects_empty_and_duplicate_window_titles() {
+    fn window_errors_map_into_config_error() {
+        let src = format!("{VALID}\n[[window]]\ntitle = \"Docs\"\n");
+        let err = parse_and_validate(&src).unwrap_err();
         assert!(matches!(
-            parse_and_validate("[[window]]\ntitle = \"  \"\n").unwrap_err(),
-            ConfigError::EmptyField("title")
+            err,
+            ConfigError::Window(WindowError::DuplicateTitle(ref t)) if t == "Docs"
         ));
-        let src = "[[window]]\ntitle = \"W\"\n[[window]]\ntitle = \"W\"\n";
-        assert!(matches!(
-            parse_and_validate(src).unwrap_err(),
-            ConfigError::DuplicateWindowTitle(_)
-        ));
+        assert_eq!(err.to_string(), "duplicate window title `Docs`");
     }
 
     #[test]
-    fn rejects_zero_window_dimension() {
-        let src = "[[window]]\ntitle = \"W\"\nwidth = 0\n";
-        assert!(matches!(
-            parse_and_validate(src).unwrap_err(),
-            ConfigError::InvalidWindowSize { .. }
-        ));
-    }
-
-    #[test]
-    fn rejects_invalid_colour() {
-        let src = "[[window]]\ntitle = \"W\"\ncolour = \"octarine\"\n";
-        assert!(matches!(
-            parse_and_validate(src).unwrap_err(),
-            ConfigError::InvalidColour { .. }
-        ));
+    fn lector_window_gains_open_on_start() {
+        let (cfg, _) = parse_and_validate(VALID).unwrap();
+        assert!(cfg.windows[0].open_on_start, "defaults to open");
+        let src = VALID.replace(
+            "title = \"Docs\"",
+            "title = \"Docs\"\nopen_on_start = false",
+        );
+        let (cfg, _) = parse_and_validate(&src).unwrap();
+        assert!(!cfg.windows[0].open_on_start);
+        // lector's own keys still land in its extras.
+        assert_eq!(cfg.windows[0].extra.tabs.len(), 1);
+        assert!(!cfg.windows[0].extra.open_on_launch);
     }
 
     #[test]
@@ -590,26 +565,12 @@ title = "W"
 "#;
         let (cfg, _warnings) = parse_and_validate(src).unwrap();
         let labels: Vec<_> = cfg.windows[0]
-            .tab_views()
+            .tab_views("W")
             .into_iter()
             .map(|v| v.label)
             .collect();
         assert_eq!(labels.len(), 2);
         assert_ne!(labels[0], labels[1], "distinct dirs → distinct labels");
-    }
-
-    #[test]
-    fn rejects_empty_and_duplicate_group_names() {
-        let src = "[[window]]\ntitle = \"W\"\n[[window.group]]\nname = \" \"\n";
-        assert!(matches!(
-            parse_and_validate(src).unwrap_err(),
-            ConfigError::EmptyField("name")
-        ));
-        let src = "[[window]]\ntitle = \"W\"\n[[window.group]]\nname = \"G\"\n[[window.group]]\nname = \"G\"\n";
-        assert!(matches!(
-            parse_and_validate(src).unwrap_err(),
-            ConfigError::DuplicateGroupName { .. }
-        ));
     }
 
     #[test]
@@ -673,7 +634,7 @@ title = "W"
         // tab on last-good config. It surfaces on select instead, via the chrome's error bar.
         let src = "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"Gone\"\ndir = \"/definitely/not/here\"\n";
         let (cfg, warnings) = parse_and_validate(src).unwrap();
-        assert_eq!(cfg.windows[0].tabs.len(), 1);
+        assert_eq!(cfg.windows[0].extra.tabs.len(), 1);
         assert!(warnings.iter().any(|w| w.message.contains("dir missing")));
     }
 
@@ -727,7 +688,7 @@ title = "W"
     dir = "/usr"
 "#;
         let cfg = parse_and_validate(src).unwrap().0;
-        let views = cfg.windows[0].tab_views();
+        let views = cfg.windows[0].tab_views("W");
         assert_eq!(views[0].title, "Loose");
         assert_eq!(views[0].group, None);
         assert_eq!(views[1].title, "Grouped");
@@ -749,8 +710,8 @@ title = "W"
         .unwrap()
         .0;
         assert_eq!(
-            a.windows[0].tab_views()[0].label,
-            b.windows[0].tab_views()[0].label,
+            a.windows[0].tab_views("W")[0].label,
+            b.windows[0].tab_views("W")[0].label,
             "retitling a tab must not change its label"
         );
     }
@@ -770,8 +731,8 @@ title = "W"
         .unwrap()
         .0;
         assert_eq!(
-            a.windows[0].tab_views()[0].label,
-            b.windows[0].tab_views()[0].label
+            a.windows[0].tab_views("W")[0].label,
+            b.windows[0].tab_views("W")[0].label
         );
     }
 
@@ -779,7 +740,7 @@ title = "W"
     fn label_is_stable_when_a_tab_is_inserted_before_it() {
         let base = parse_and_validate(VALID).unwrap().0;
         let first = base.windows[0]
-            .tab_views()
+            .tab_views("W")
             .into_iter()
             .find(|t| t.title == "compositor")
             .unwrap()
@@ -801,7 +762,7 @@ title = "Docs"
 "#;
         let inserted = parse_and_validate(src).unwrap().0;
         let after = inserted.windows[0]
-            .tab_views()
+            .tab_views("W")
             .into_iter()
             .find(|t| t.title == "compositor")
             .unwrap();
@@ -817,7 +778,7 @@ title = "Docs"
         // would share one webview.
         let src = "[[window]]\ntitle = \"W\"\n[[window.tab]]\ntitle = \"A\"\ndir = \"/tmp\"\n[[window.tab]]\ntitle = \"B\"\ndir = \"/tmp\"\n";
         let cfg = parse_and_validate(src).unwrap().0;
-        let views = cfg.windows[0].tab_views();
+        let views = cfg.windows[0].tab_views("W");
         assert_ne!(views[0].label, views[1].label);
     }
 
@@ -828,12 +789,12 @@ title = "Docs"
         // `compositor` is load_on_open, so it wins.
         let default = parse_and_validate(VALID).unwrap().0;
         let loaded = default.windows[0]
-            .tab_views()
+            .tab_views("W")
             .into_iter()
             .find(|v| v.title == "compositor")
             .unwrap()
             .label;
-        assert_eq!(default.windows[0].startup_label(), Some(loaded));
+        assert_eq!(default.windows[0].startup_label("W"), Some(loaded));
 
         // `open_on_launch = true` forces the first tab even though it's cold (homelab).
         let src = VALID.replace(
@@ -842,8 +803,8 @@ title = "Docs"
         );
         let forced = parse_and_validate(&src).unwrap().0;
         assert_eq!(
-            forced.windows[0].startup_label(),
-            Some(forced.windows[0].tab_views()[0].label.clone())
+            forced.windows[0].startup_label("W"),
+            Some(forced.windows[0].tab_views("W")[0].label.clone())
         );
 
         // No loaded tab anywhere → blank background, nothing forced.
@@ -852,7 +813,7 @@ title = "Docs"
         )
         .unwrap()
         .0;
-        assert_eq!(none.windows[0].startup_label(), None);
+        assert_eq!(none.windows[0].startup_label("W"), None);
     }
 
     #[test]
@@ -987,7 +948,7 @@ dir = "/tmp"
             tree_path: vec!["gh".into()],
             section: "Dev".into(),
         }];
-        let views = w.tab_views_with_discovered(&disc);
+        let views = w.tab_views_with_discovered("W", &disc);
         assert_eq!(views.len(), 2);
         assert!(!views[0].tree); // curated
         assert!(views[1].tree);
@@ -1007,7 +968,7 @@ dir = "/tmp"
             tree_path: vec![],
             section: "Dev".into(),
         }];
-        let views = w.tab_views_with_discovered(&disc);
+        let views = w.tab_views_with_discovered("W", &disc);
         assert_eq!(
             views.len(),
             1,

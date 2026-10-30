@@ -7,11 +7,11 @@
 //! this codebase avoids elsewhere (see the root CLAUDE.md's "one source of truth"). So `run()`'s
 //! setup and the hot-reload watcher both call [`reconcile`].
 
-use crate::commands::{AppState, WindowMeta};
-use lector_config::{TabView, WindowConfig};
+use crate::commands::AppState;
+use lector_config::{TabView, WindowConfig, WindowTabs};
 use std::collections::HashSet;
 
-/// Re-resolve every window's tabs against `windows`, install them as the new last-good views,
+/// Re-resolve every window's tabs against `windows` (each under its `WindowSet` label), install them as the new last-good views,
 /// retain only servers whose tab survived (this is what stops a removed tab's server — see
 /// `Servers::retain`'s doc for the leak it prevents), and eager-start every `load_on_open` tab
 /// that isn't already live.
@@ -24,16 +24,16 @@ use std::collections::HashSet;
 ///
 /// Returns the new tab views, already installed into `state` — callers that need to act on them
 /// further (launch's `open_on_launch` selection) don't need a second `views_for_window` round-trip.
-pub fn reconcile(state: &AppState, windows: &[WindowConfig]) -> Vec<TabView> {
+pub fn reconcile(state: &AppState, windows: &[(String, WindowConfig)]) -> Vec<TabView> {
     // Discovered projects from each window's `[[window.root]]`s are folded in here so BOTH callers —
     // launch and hot-reload — pick up roots through the one choke point, and `retain`/eager-start below
     // treat a discovered tab like any other. Scanning per reconcile is what makes `rescan_root` a plain
     // re-call of this path.
     let all_views: Vec<TabView> = windows
         .iter()
-        .flat_map(|w| {
+        .flat_map(|(label, w)| {
             let discovered = lector_config::discover_projects(&w.resolved_roots());
-            w.tab_views_with_discovered(&discovered)
+            w.tab_views_with_discovered(label, &discovered)
         })
         .collect();
     state.set_views(all_views.clone());
@@ -57,73 +57,6 @@ pub fn reconcile(state: &AppState, windows: &[WindowConfig]) -> Vec<TabView> {
     }
 
     all_views
-}
-
-/// The ids of built windows (`meta`) that `windows` no longer defines — a `[[window]]` deleted, or
-/// retitled (a title is the window's identity, so a retitle is a removal plus an addition). The one
-/// decider for which windows a clean reload closes; [`crate::reconcile_windows`] acts on it.
-pub fn removed_window_ids(meta: &[WindowMeta], windows: &[WindowConfig]) -> HashSet<String> {
-    let wanted: HashSet<String> = windows
-        .iter()
-        .map(|w| lector_config::identity::window_id(&w.title))
-        .collect();
-    meta.iter()
-        .filter(|m| !wanted.contains(&m.id))
-        .map(|m| m.id.clone())
-        .collect()
-}
-
-/// Project every window's fixed [`WindowMeta`] into the menu spine's / home surface's shared
-/// [`shell_core::menu::WindowEntry`] shape, re-checking each one's live `open` state against the
-/// running app (the one field `WindowMeta` deliberately doesn't cache, since it changes independent
-/// of config — a window closes and reopens with no reload involved).
-pub fn window_entries(
-    app: &tauri::AppHandle,
-    meta: &[WindowMeta],
-) -> Vec<shell_core::menu::WindowEntry> {
-    use tauri::Manager;
-    meta.iter()
-        .map(|m| shell_core::menu::WindowEntry {
-            id: m.id.clone(),
-            title: m.title.clone(),
-            open: app.get_window(&m.id).is_some(),
-            colour: m.colour.clone(),
-        })
-        .collect()
-}
-
-/// Show or close the home surface to match the current state — the other half of "the app is never
-/// stranded invisible," run after the initial load and after every hot-reload (both a clean one and
-/// a failed one, so a config edited from working into broken while every window happens to be closed
-/// still explains itself rather than going dark). `has_windows` is derived from `entries` itself
-/// (any window currently open) rather than taken as a separate argument — one fewer thing for a
-/// caller to get out of sync with the list it just built — folded together with whether any tab is
-/// currently popped out into its own detached window: a detached window is a real surface on
-/// screen, so the home surface must not appear over it even if every *real* window happens to be
-/// closed (possible while a detached window — or another still-open window — keeps the app alive
-/// past last-window-quit). Mirrors curator's equivalent fold in its own `reconcile_home`.
-pub fn reconcile_home(
-    app: &tauri::AppHandle,
-    entries: &[shell_core::menu::WindowEntry],
-    config_path: &str,
-    config_exists: bool,
-    load_error: Option<&str>,
-) {
-    use tauri::Manager as _;
-    let has_detached = !app
-        .state::<AppState>()
-        .detached
-        .lock()
-        .expect("detached lock")
-        .is_empty();
-    let has_windows = entries.iter().any(|w| w.open) || has_detached;
-    match shell_core::home::home_state(has_windows, config_exists, config_path, load_error, entries)
-    {
-        Some(state) => {
-            let _ = shell_core::home::show_home(app, &state, "lector");
-        }
-        None => shell_core::home::close_home(app),
-    }
 }
 
 #[cfg(test)]
@@ -150,55 +83,16 @@ mod tests {
             .remove(0)
     }
 
-    fn meta(title: &str) -> WindowMeta {
-        WindowMeta {
-            id: lector_config::identity::window_id(title),
-            title: title.to_string(),
-            width: 800.0,
-            height: 600.0,
-            colour: None,
-        }
-    }
-
-    fn windows(titles: &[&str]) -> Vec<WindowConfig> {
-        let src: String = titles
-            .iter()
-            .map(|t| format!("[[window]]\ntitle = \"{t}\"\n"))
-            .collect();
-        lector_config::parse_and_validate(&src).unwrap().0.windows
-    }
-
-    #[test]
-    fn a_retitled_window_is_removed_under_its_old_id_only() {
-        let removed = removed_window_ids(
-            &[meta("Docs"), meta("Notes")],
-            &windows(&["Docs", "Reference"]),
-        );
-        assert_eq!(
-            removed,
-            HashSet::from([lector_config::identity::window_id("Notes")])
-        );
-    }
-
-    #[test]
-    fn an_unchanged_or_grown_config_removes_nothing() {
-        let built = [meta("Docs"), meta("Notes")];
-        assert!(removed_window_ids(&built, &windows(&["Docs", "Notes"])).is_empty());
-        assert!(removed_window_ids(&built, &windows(&["Notes", "Docs", "New"])).is_empty());
-        assert!(removed_window_ids(&[], &windows(&["Docs"])).is_empty());
-    }
-
-    #[test]
-    fn a_window_less_config_removes_every_built_window() {
-        let removed = removed_window_ids(&[meta("Docs"), meta("Notes")], &[]);
-        assert_eq!(removed.len(), 2);
+    /// `win` under the window label `W`.
+    fn labelled(win: &WindowConfig) -> Vec<(String, WindowConfig)> {
+        vec![("W".to_string(), win.clone())]
     }
 
     #[test]
     fn take_detached_from_takes_only_the_removed_origins_tabs() {
         let state = AppState::new();
-        let gone = lector_config::identity::window_id("Gone");
-        let kept = lector_config::identity::window_id("Kept");
+        let gone = "Gone".to_string();
+        let kept = "Kept".to_string();
         for (det, origin) in [("d-gone", &gone), ("d-kept", &kept)] {
             state.detached.lock().unwrap().insert(
                 det.to_string(),
@@ -238,7 +132,7 @@ mod tests {
             .remove(0);
         let state = AppState::new();
 
-        let views = reconcile(&state, std::slice::from_ref(&win));
+        let views = reconcile(&state, &labelled(&win));
 
         let discovered: Vec<_> = views.iter().filter(|v| v.tree).collect();
         assert!(
@@ -257,7 +151,7 @@ mod tests {
         let win = window_with("W", &dir, true);
         let state = AppState::new();
 
-        let views = reconcile(&state, std::slice::from_ref(&win));
+        let views = reconcile(&state, &labelled(&win));
 
         assert_eq!(views.len(), 1);
         assert!(
@@ -274,7 +168,7 @@ mod tests {
         let win = window_with("W", &dir, false);
         let state = AppState::new();
 
-        let views = reconcile(&state, std::slice::from_ref(&win));
+        let views = reconcile(&state, &labelled(&win));
 
         assert!(!state.servers.is_alive(&views[0].label));
         std::fs::remove_dir_all(&dir).ok();
@@ -287,10 +181,8 @@ mod tests {
         let dir = scratch("removed");
         let win = window_with("W", &dir, true);
         let state = AppState::new();
-        reconcile(&state, std::slice::from_ref(&win));
-        let label = state.views_for_window(&lector_config::identity::window_id("W"))[0]
-            .label
-            .clone();
+        reconcile(&state, &labelled(&win));
+        let label = state.views_for_window("W")[0].label.clone();
         assert!(state.servers.is_alive(&label));
 
         // New config for the same window has no tabs at all.
@@ -299,7 +191,7 @@ mod tests {
             .0
             .windows
             .remove(0);
-        reconcile(&state, std::slice::from_ref(&empty));
+        reconcile(&state, &labelled(&empty));
 
         assert!(
             !state.servers.is_alive(&label),
@@ -317,10 +209,8 @@ mod tests {
         let dir = scratch("detached");
         let win = window_with("W", &dir, true);
         let state = AppState::new();
-        reconcile(&state, std::slice::from_ref(&win));
-        let label = state.views_for_window(&lector_config::identity::window_id("W"))[0]
-            .label
-            .clone();
+        reconcile(&state, &labelled(&win));
+        let label = state.views_for_window("W")[0].label.clone();
         assert!(state.servers.is_alive(&label));
 
         // Mark the tab as popped out into its own detached window (mirrors what `pop_out_tab` does
@@ -341,7 +231,7 @@ mod tests {
             .0
             .windows
             .remove(0);
-        reconcile(&state, std::slice::from_ref(&empty));
+        reconcile(&state, &labelled(&empty));
 
         assert!(
             state.servers.is_alive(&label),
@@ -358,14 +248,12 @@ mod tests {
         let dir = scratch("stable");
         let win = window_with("W", &dir, true);
         let state = AppState::new();
-        reconcile(&state, std::slice::from_ref(&win));
-        let label = state.views_for_window(&lector_config::identity::window_id("W"))[0]
-            .label
-            .clone();
+        reconcile(&state, &labelled(&win));
+        let label = state.views_for_window("W")[0].label.clone();
         let port_before = state.servers.port(&label);
 
         // Reconcile again with the identical config.
-        reconcile(&state, std::slice::from_ref(&win));
+        reconcile(&state, &labelled(&win));
 
         assert_eq!(
             state.servers.port(&label),

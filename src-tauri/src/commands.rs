@@ -30,12 +30,14 @@
 //! nothing about delivery.
 //!
 //! **Footgun:** the local/remote split (for this crate's own commands) is by *origin*, so the home
-//! surface (`shell-home://`, `shell_core::home`) is a second local-origin surface and reaches these
-//! commands ungated. Accepted because its HTML is fixed and shell-core-bundled; a local surface
+//! surface (`shell-home://`, `shell_core::home`) and the window form (`shell-window-form://`) are
+//! local-origin surfaces too and reach these commands ungated. Accepted because their HTML is fixed
+//! and shell-core-bundled; a local surface
 //! serving anything else needs a per-caller gate (a curator-style `is_chrome_caller`).
 
 use crate::servers::Servers;
-use lector_config::{Density, TabDigitKeys, TabView};
+use lector_config::identity::window_of;
+use lector_config::{Config, Density, TabDigitKeys, TabView, WindowConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -97,22 +99,8 @@ pub fn tab_dtos(
         .collect()
 }
 
-/// A configured window's fixed identity — enough to rebuild it after the user closes it (the
-/// Window menu's reopen path) or to describe it to the menu spine / home surface. `id`/`title`/
-/// `colour` are fixed once the window is built (a clean hot-reload adds and removes whole entries —
-/// `crate::reconcile_windows` — but never edits one); `width`/`height` are its *initial* size,
-/// reused verbatim on a rebuild since Tauri doesn't remember a closed window's last size once it's gone.
-#[derive(Debug, Clone)]
-pub struct WindowMeta {
-    pub id: String,
-    pub title: String,
-    pub width: f64,
-    pub height: f64,
-    pub colour: Option<String>,
-}
-
 /// A tab popped out into its own detached window (`pop_out_tab`). Kept in [`AppState::detached`],
-/// **separate from `window_meta`**, so the Window submenu never sees it —
+/// **separate from the `WindowSet`**, so the Window submenu never sees it —
 /// the same reason curator keeps its equivalent (`CuratorDetached`) out of its window registry.
 /// `port` is recorded rather than re-derived from `Servers::port` on redock: the server is never
 /// stopped across the hop (that's the whole point of a near-lossless pop-out), so the port a
@@ -158,16 +146,13 @@ pub struct AppState {
     /// Whole-app `tab_digit_keys`, set on every clean load; the menu bar is rebuilt from it when a
     /// window opens or closes, and the Cycle Tabs toggle writes its flip.
     tab_digit_keys: Mutex<TabDigitKeys>,
-    /// Every configured window's fixed identity (see [`WindowMeta`]), for the menu spine's Window
-    /// submenu and reopening a closed window from it. Grows as `lib.rs` builds windows (at launch,
-    /// via `reload_now`, and on a clean hot-reload) and shrinks only when a clean hot-reload drops a
-    /// window from the config — a window the user closes stays in this list so it can be rebuilt.
-    window_meta: Mutex<Vec<WindowMeta>>,
+    /// The last cleanly loaded config: what a window's tabs resolve from whenever the `WindowSet`
+    /// opens one (launch, reload, reopen).
+    last_cfg: Mutex<Config>,
     /// Tabs currently popped out into their own detached window, keyed by the detached window's
-    /// Tauri label ([`shell_core::detach::detached_label`]). **Separate from `window_meta`** so
-    /// reconcile never touches these ephemeral windows (shell-core's geometry module excludes them
-    /// structurally too — see its CLAUDE.md), and so the home-surface check can still count them
-    /// (`reload::reconcile_home`) — a detached window is a real surface on screen.
+    /// Tauri label ([`shell_core::detach::detached_label`]). **Separate from the `WindowSet`** so
+    /// reconcile never touches these ephemeral windows; their count is mirrored into it
+    /// (`crate::sync_detached`) — a detached window is a real surface on screen.
     pub detached: Mutex<HashMap<String, LectorDetached>>,
 }
 
@@ -183,7 +168,7 @@ impl AppState {
             dark_mode: AtomicBool::new(false),
             auto_update: AtomicBool::new(true),
             tab_digit_keys: Mutex::new(TabDigitKeys::default()),
-            window_meta: Mutex::new(Vec::new()),
+            last_cfg: Mutex::new(Config::default()),
             detached: Mutex::new(HashMap::new()),
         }
     }
@@ -203,20 +188,19 @@ impl AppState {
 
     /// This window's tabs, in the order they were resolved (config order — see the struct doc).
     pub fn views_for_window(&self, window_id: &str) -> Vec<TabView> {
-        let prefix = format!("{window_id}:");
         self.views
             .lock()
             .expect("views lock")
             .iter()
-            .filter(|v| v.label.starts_with(&prefix))
+            .filter(|v| window_of(&v.label) == window_id)
             .cloned()
             .collect()
     }
 
     pub fn set_active(&self, label: &str) {
-        // The window id is the label's namespace prefix (`{window_id}:{within}`), so active is
+        // The window label is the tab label's namespace (`{window}:{within}`), so active is
         // tracked per window without threading a window handle through every command.
-        let window = label.split(':').next().unwrap_or_default().to_string();
+        let window = window_of(label).to_string();
         self.active
             .lock()
             .expect("active lock")
@@ -261,7 +245,7 @@ impl AppState {
     /// Clear this window's active tab iff it currently points at `label`. No-op when a different
     /// tab (or none) is active — unloading a tab that isn't showing must not disturb the one that is.
     pub(crate) fn clear_active_if(&self, label: &str) {
-        let window = label.split(':').next().unwrap_or_default();
+        let window = window_of(label);
         let mut active = self.active.lock().expect("active lock");
         if active.get(window).map(String::as_str) == Some(label) {
             active.remove(window);
@@ -316,21 +300,28 @@ impl AppState {
         self.dark_mode.load(Ordering::Relaxed)
     }
 
-    /// Every window built so far, in build order. Clones — callers get a snapshot, never a lock
-    /// held across their own work (the menu spine and `reload_now` both hold this while calling
-    /// back into Tauri APIs that could otherwise re-enter).
-    pub fn window_meta(&self) -> Vec<WindowMeta> {
-        self.window_meta.lock().expect("window_meta lock").clone()
+    /// A snapshot of the last cleanly loaded config.
+    pub fn last_cfg(&self) -> Config {
+        self.last_cfg.lock().expect("last_cfg lock").clone()
     }
 
-    /// Replace the whole window-meta list. Callers build the new list starting from
-    /// [`window_meta`](Self::window_meta) (see the field's own doc for when it grows and shrinks).
-    pub fn set_window_meta(&self, meta: Vec<WindowMeta>) {
-        *self.window_meta.lock().expect("window_meta lock") = meta;
+    pub fn set_last_cfg(&self, cfg: Config) {
+        *self.last_cfg.lock().expect("last_cfg lock") = cfg;
+    }
+
+    /// The last cleanly loaded `[[window]]` titled `title` (trimmed).
+    pub fn window_cfg(&self, title: &str) -> Option<WindowConfig> {
+        self.last_cfg
+            .lock()
+            .expect("last_cfg lock")
+            .windows
+            .iter()
+            .find(|w| w.title.trim() == title.trim())
+            .cloned()
     }
 
     /// Every tab label currently popped out into its own window, across every window. Labels are
-    /// already window-namespaced (`{window_id}:tab-hash`), so a flat set needs no per-window split —
+    /// already window-namespaced (`{window}:tab-hash`), so a flat set needs no per-window split —
     /// used by [`tab_dtos`] to set each row's `detached` flag.
     pub fn detached_tab_labels(&self) -> HashSet<String> {
         self.detached
@@ -342,9 +333,9 @@ impl AppState {
     }
 
     /// Remove and return the detached-window labels of every tab popped out of a window in
-    /// `origins`. Taken *before* those windows are destroyed, so `redock` finds nothing to return
-    /// to a window that no longer exists, and the next `reload::reconcile`'s `retain` stops the
-    /// tabs' servers like any other removed tab's.
+    /// `origins`. Taken before those detached windows are destroyed, so `redock` finds nothing to
+    /// return to a window that no longer exists, and the next `reload::reconcile`'s `retain` stops
+    /// the tabs' servers like any other removed tab's.
     pub fn take_detached_from(&self, origins: &HashSet<String>) -> Vec<String> {
         let mut detached = self.detached.lock().expect("detached lock");
         let labels: Vec<String> = detached
@@ -421,7 +412,7 @@ pub fn unload_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, 
     if state.detached_tab_labels().contains(&label) {
         return;
     }
-    let window = label.split(':').next().unwrap_or_default().to_string();
+    let window = window_of(&label).to_string();
     let was_active = state.active_for(&window).as_deref() == Some(label.as_str());
     // Tear down this tab: stop its server and clear active if it was showing (AppState::unload),
     // then destroy its content webview.
@@ -477,18 +468,19 @@ pub fn pop_out_tab(
     let view = state
         .view(&label)
         .ok_or_else(|| format!("no such tab: {label}"))?;
-    let window_id = label.split(':').next().unwrap_or_default().to_string();
+    let window_id = window_of(&label).to_string();
 
-    // Resolve the origin window's size/colour up front, before any teardown below — a lookup miss
-    // here would mean `window_id` drifted out of sync with `window_meta` (every real window is
-    // pushed there at build time, before any command from its webview can run), so it's rejected
-    // rather than guessed at, and rejected before this call has any side effect to undo.
-    let meta = state.window_meta();
-    let (width, height, colour) = meta
-        .iter()
-        .find(|m| m.id == window_id)
-        .map(|m| (m.width, m.height, m.colour.clone()))
-        .ok_or_else(|| format!("no window metadata for {window_id}"))?;
+    // Resolve the origin window's size/colour up front, before any teardown below, so a miss is
+    // rejected before this call has any side effect to undo.
+    let origin = app
+        .state::<shell_core::windows::WindowSet>()
+        .entries()
+        .into_iter()
+        .find(|e| e.id == window_id)
+        .and_then(|e| state.window_cfg(&e.title))
+        .ok_or_else(|| format!("no window {window_id}"))?;
+    let (width, height) = (origin.width as f64, origin.height as f64);
+    let colour = state.colour_for(&window_id);
 
     // Ensure the server is live and get its port — idempotent if it's already running (the common
     // case: popping out a tab you're currently looking at). Never stopped by this command.
@@ -517,7 +509,7 @@ pub fn pop_out_tab(
         panes: vec![],
         pane_band: None,
     };
-    // A content-webview label is already globally unique (`{window_id}:tab-hash`), so it doubles as
+    // A content-webview label is already globally unique (`{window}:tab-hash`), so it doubles as
     // the detach token — mirrors curator's `detach_window_token`.
     let token = crate::detach_window_token(&label);
     let label_for_birth = label.clone();
@@ -572,6 +564,7 @@ pub fn pop_out_tab(
             shell_core::web::content::wire_close_pages(&win);
         }
     }
+    crate::sync_detached(&app);
     Ok(())
 }
 
@@ -653,17 +646,12 @@ pub fn window_identity(window: tauri::Window, state: tauri::State<'_, AppState>)
 #[tauri::command]
 pub fn get_tabs(window: tauri::Window, state: tauri::State<'_, AppState>) -> Vec<TabPayload> {
     state.servers.reap();
-    let window_id = window
-        .label()
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .to_string();
-    let views = state.views_for_window(&window_id);
+    let window_id = window.label();
+    let views = state.views_for_window(window_id);
     tab_dtos(
         &views,
         &state.servers,
-        state.active_for(&window_id).as_deref(),
+        state.active_for(window_id).as_deref(),
         &state.detached_tab_labels(),
     )
 }
@@ -776,6 +764,17 @@ pub fn shell_home_open_window(id: String, app: tauri::AppHandle) {
     crate::open_or_focus_window(&app, &id);
 }
 
+/// The banner's context menu (chrome-core's `onBannerMenu`) at the chrome's `(x, y)`: Edit
+/// Window… and Delete Window… for the calling window. Its items arrive as menu events.
+#[tauri::command]
+pub fn window_menu(x: f64, y: f64, window: tauri::Window) -> Result<(), String> {
+    let menu = crate::windows::banner_menu(window.app_handle(), window.label())
+        .map_err(|e| e.to_string())?;
+    window
+        .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())
+}
+
 /// Re-scan every window's `[[window.root]]`s (and re-read the config) and reconcile — the chrome's
 /// `⟳` rescan button (chrome-core `onRescan`). Projects added/removed on disk appear/vanish without
 /// a config edit: `crate::apply_clean_load` re-scans roots (via `reload::reconcile`, which calls
@@ -785,8 +784,8 @@ pub fn shell_home_open_window(id: String, app: tauri::AppHandle) {
 pub fn rescan_root(app: tauri::AppHandle) {
     let path = lector_config::resolve_config_path();
     match lector_config::load_config(&path) {
-        Ok((cfg, warnings)) => crate::apply_clean_load(&app, &cfg, &warnings, &path),
-        Err(e) => crate::surface_load_error(&app, &e.to_string(), &path),
+        Ok((cfg, warnings)) => crate::apply_clean_load(&app, &cfg, &warnings),
+        Err(e) => crate::surface_load_error(&app, &e.to_string()),
     }
 }
 

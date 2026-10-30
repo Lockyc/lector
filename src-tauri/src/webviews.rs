@@ -16,9 +16,11 @@
 //! silently show a different repo's site inside this tab — is cancelled, and handed to the system
 //! browser only when [`escapes_to_browser`] allows its scheme.
 
+use lector_config::identity::window_of;
 use tauri::webview::WebviewBuilder;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, TitleBarStyle, Url, WebviewUrl, Window,
+    AppHandle, LogicalPosition, LogicalSize, Manager, TitleBarStyle, Url, WebviewUrl,
+    WebviewWindow, Window,
 };
 
 use std::collections::HashMap;
@@ -52,15 +54,16 @@ fn hole_for(window_id: &str) -> HoleRect {
         })
 }
 
-/// Build a window and its chrome (sidebar) webview. `window_id` becomes the window label and
-/// namespaces the content webview labels (`{window_id}:tab-<hash>`, from `lector_config::identity`).
+/// Build a window and its chrome (sidebar) webview, and wire its close handler. `window_id` (the
+/// `WindowSet` label) becomes the window label and namespaces the content webview labels
+/// (`{window_id}:tab-<hash>`, from `lector_config::identity`).
 pub fn build_window(
     app: &AppHandle,
     window_id: &str,
     title: &str,
     win_w: f64,
     win_h: f64,
-) -> tauri::Result<Window> {
+) -> tauri::Result<WebviewWindow> {
     let webview_window =
         tauri::WebviewWindowBuilder::new(app, window_id, WebviewUrl::App("index.html".into()))
             .title(title)
@@ -78,7 +81,15 @@ pub fn build_window(
         .expect("holes lock")
         .insert(window_id.to_string(), initial_hole(win_w, win_h));
 
-    Ok(window)
+    let close_app = app.clone();
+    let close_label = window_id.to_string();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
+            crate::on_real_window_close(&close_app, &close_label);
+        }
+    });
+
+    Ok(webview_window)
 }
 
 /// Record a freshly-reported hole and reposition this window's content webviews to match. Called by
@@ -223,7 +234,7 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
 /// prefix — the normal (origin-window) case, including a redocked tab (its label's prefix is
 /// always its origin window's id).
 pub fn show(app: &AppHandle, label: &str, port: u16) -> Result<(), String> {
-    let window_id = label.split(':').next().unwrap_or_default();
+    let window_id = window_of(label);
     let window = app.get_window(window_id).ok_or("no such window")?;
     show_in(&window, label, port)
 }
@@ -255,7 +266,7 @@ pub fn seed_hole(window_label: &str, hole: HoleRect) {
 /// `unload_tab` so a cold tab doesn't strand a dead-connection page on screen — without this, closing
 /// the server but leaving the webview up shows a broken page instead of the app's empty state.
 pub fn close(app: &AppHandle, label: &str) {
-    let window_id = label.split(':').next().unwrap_or_default();
+    let window_id = window_of(label);
     let Some(window) = app.get_window(window_id) else {
         return;
     };
@@ -267,7 +278,7 @@ pub fn close(app: &AppHandle, label: &str) {
 /// Navigate an already-created content webview to `url` (curator's `reload_canonical`, applied to a
 /// local site — used by `home_tab`). No-op if the webview hasn't been created yet.
 pub fn navigate(app: &AppHandle, label: &str, url: &str) -> Result<(), String> {
-    let window_id = label.split(':').next().unwrap_or_default();
+    let window_id = window_of(label);
     let Some(window) = app.get_window(window_id) else {
         return Ok(());
     };
@@ -281,7 +292,7 @@ pub fn navigate(app: &AppHandle, label: &str, url: &str) -> Result<(), String> {
 /// Evaluate `script` in `label`'s content webview (the nav pill's back/forward — `commands.rs`'s
 /// `nav_back`/`nav_forward`). No-op if the webview hasn't been created yet, same as [`navigate`].
 pub fn eval_on(app: &AppHandle, label: &str, script: &str) -> Result<(), String> {
-    let window_id = label.split(':').next().unwrap_or_default();
+    let window_id = window_of(label);
     let Some(window) = app.get_window(window_id) else {
         return Ok(());
     };

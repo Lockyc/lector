@@ -4,9 +4,9 @@
 //! config-core crate, re-exported here so the app (`src-tauri`) uses
 //! `lector_config::{Colour, format_file, format_str}`.
 pub use config_core::{
-    discover_projects, edit, fmt_cli, format_file, format_str, retitle_window, set_key, toml_edit,
-    write_default_config, Colour, ColourError, Density, DiscoveredProject, Group, RootDir,
-    SeedError, TabDigitKeys, Warning, WindowError,
+    discover_projects, edit, fmt_cli, format_file, format_str, retitle_window,
+    toggle_tab_digit_keys, toml_edit, write_default_config, Colour, ColourError, Density,
+    DiscoveredProject, Group, RootDir, SeedError, TabDigitKeys, Warning, WindowError,
 };
 
 pub mod hash;

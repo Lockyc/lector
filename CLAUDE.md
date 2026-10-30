@@ -48,11 +48,12 @@ commands, config hot-reload.
 - **`src-tauri/`** — the macOS Tauri app: the manifest, `build.rs`, `tauri.conf.json`,
   `capabilities/default.json`, plugin registration, the `Servers` supervisor (`servers.rs`), the
   chrome controller + commands (`commands.rs`), content-webview management + link escape
-  (`webviews.rs`), the shared launch/hot-reload reconciliation path (`reload.rs`), `run()`'s full
-  setup (`lib.rs`), and the `validate`/`fmt` CLI.
-- **`crates/lector-config`** — the config parser: the `window → group → tab` schema (a lector tab
-  carries a `dir` — a local doc repo path — rather than a `url`), `parse_and_validate` /
-  `load_config`, `resolve_config_path`, identity/hash helpers, `tab_views()`/`startup_label()`.
+  (`webviews.rs`), the shared launch/hot-reload reconciliation path (`reload.rs`), the window
+  lifecycle (`windows.rs`), `run()`'s full setup (`lib.rs`), and the `validate`/`fmt` CLI.
+- **`crates/lector-config`** — the config parser: config-core's shared `Window` with lector's
+  `LectorWindow` extras (a lector tab carries a `dir` — a local doc repo path — rather than a
+  `url`), `parse_and_validate` / `load_config`, `resolve_config_path`, identity/hash helpers, the
+  `WindowTabs` trait (`tab_views`/`startup_label`, labelled under the window's label).
   Re-exports config-core's shared house formatter + colour parsing, the same way curator/warden do.
 
 The `[patch]` overrides for all four shared cores live in the **workspace-root `Cargo.toml`** (a
@@ -136,13 +137,19 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
 (tauri's `devtools` feature is off — a debug build's right-click Inspect Element is the route).
   Other tab-scoped actions (reveal-in-Finder, copy the served URL, open the repo dir) are open
   roadmap, not excluded — the submenu is just empty of them for now.
-- **The whole menu is built by one function, `refresh_menu` (`lib.rs`), from `AppState`** — at
-  setup, on every clean load (so `tab_digit_keys`, below, flips live), and whenever a config window
-  opens or is destroyed (the Window submenu's ticks and "(closed)" labels).
-- **The home surface** (`shell_core::home::{home_state, show_home, close_home}`) is
-  what a fresh install shows: before this, lector built zero windows and no menu when
-  `~/.config/lector/config.toml` didn't exist, so it launched to a live, invisible, unrecoverable
-  process. Its "Create a starter config" button is `commands::shell_home_create_config`, calling
+- **The whole menu is built by one function, `refresh_menu` (`lib.rs`), from the `WindowSet` and
+  `AppState`** — at setup, on every clean load (so `tab_digit_keys`, below, flips live), and
+  whenever a window opens, closes, is renamed or deleted (the Window submenu's ticks and
+  "(closed)" labels).
+- **Windows are shell-core's `WindowSet`** (managed state), with `windows::LectorHost` building
+  and tearing down a window's content. It owns each window's label (the sanitized title), which
+  windows are open, the home surface and the quitting flag; a user-closed window stays listed and
+  stays closed across a reload. New Window… (the spine) and the banner's right-click Edit / Delete
+  Window… (`window_menu`) open shell-core's form and write the config through config-core's `edit`;
+  a rename retitles in place (`WindowSet::rename`). A user close of the last window quits
+  (`on_real_window_close`).
+- **The home surface** (shell-core, shown by the `WindowSet`) is what a fresh install shows. Its
+  "Create a starter config" button is `commands::shell_home_create_config`, calling
   `config_core::write_default_config` with the tracked `src/default-config.toml` template.
 - **`appName: "lector"`** (`src/chrome.js`'s mount config) names the app in chrome-core's
   `#cc-titlebar` strip beside the traffic lights; `src/chrome.css`'s `#sidebar` carries no
@@ -189,29 +196,27 @@ the origin first if the user closed it while the tab was out.
   detached window); and `reload::reconcile`'s `Servers::retain` unions in the detached labels so a
   hot-reload can't drop a popped-out tab's server mid-session. A *genuinely* removed tab's
   server-stop is deferred to `redock`'s tab-removed branch — unless its whole window left the
-  config, when `reconcile_windows` (`lib.rs`) closes the detached window with it. See
+  config, when `window_closed` (`lib.rs`) closes the detached window with it. See
   `commands.rs` / `reload.rs`.
 - **State:** `AppState.detached: Mutex<HashMap<detached_label, LectorDetached>>`, where
-  `LectorDetached { origin_wid, tab_label, port }` — kept **separate from `window_meta`** so
-  the Window submenu never sees a detached window as a real one; the home
-  surface still counts it (`reload::reconcile_home` folds `has_detached` into `has_windows`) since
-  it's a real surface on screen. `detached_tab_labels()` flattens the map to the set of tab labels,
+  `LectorDetached { origin_wid, tab_label, port }` — kept **separate from the `WindowSet`** so
+  the Window submenu never sees a detached window as a real one; its count is mirrored into the
+  set (`sync_detached`) so the home surface stays away while one is on screen.
+  `detached_tab_labels()` flattens the map to the set of tab labels,
   used by `tab_dtos` to set each row's `detached` flag and by the `unload_tab`/`retain` guards above.
 - **Chrome-facing:** `chrome.js`'s DTO map forwards `detached` (the forwarding premise above); a
   detached row renders muted with its ⤢ control suppressed, and clicking it calls
   `raise_popped_window` instead of `select_tab` — no local webview to select, so "select" means
   "raise the popped-out window."
 - **Neither `pop_out_tab` nor `redock` ever holds a lock across the window build or a webview
-  call.** `pop_out_tab` reads `window_meta()`/starts the server (both release their locks before
+  call.** `pop_out_tab` reads `window_cfg()`/starts the server (both release their locks before
   returning) and only then calls `open_detached`/`show_on` with no lock held; `redock` peeks
   `detached` (clone out, lock released), reopens the origin window if needed, then takes and removes
   the entry in a second short-lived lock before recreating the webview.
-- **`is_quitting` makes `redock` a no-op during ⌘Q.** A new `RunEvent::ExitRequested` arm spliced
-  into the existing `app.run(|_, event| …)` closure sets a `static IS_QUITTING: AtomicBool`
-  (`mark_quitting`/`is_quitting`, `lib.rs`) before any window's `Destroyed` fires; `redock` checks
-  it first and returns immediately, so a detached window's teardown during quit doesn't reopen its
-  origin or recreate a webview while every server is about to be shut down wholesale anyway
-  (`RunEvent::Exit`'s `servers.shutdown_all()`).
+- **`WindowSet::is_quitting` makes `redock` a no-op during ⌘Q.** `RunEvent::ExitRequested` calls
+  `WindowSet::mark_quitting` before any window's `Destroyed` fires, so a detached window's teardown
+  during quit doesn't reopen its origin or recreate a webview while every server is about to be
+  shut down wholesale anyway (`RunEvent::Exit`'s `servers.shutdown_all()`).
 
 ## Project-tree roots: discover repos under a dir
 
@@ -224,7 +229,7 @@ collapsible folder-tree section with a `⟳` rescan button. The leaf is `{ name,
   (`scan_root` walks the tree stopping at every `.git`; `resolve_root_dir` validates the
   `{name,dir,depth}`; `discover_projects(&[RootDir]) → Vec<DiscoveredProject>` flattens roots into
   `{path, tree_path, section}`), shared with warden. lector owns only the *synthesis*:
-  `WindowConfig::tab_views_with_discovered` maps each `DiscoveredProject` onto a doc `TabView`. This
+  `WindowTabs::tab_views_with_discovered` maps each `DiscoveredProject` onto a doc `TabView`. This
   is the constellation's "config-core owns discovery, the consuming app bridges" seam — never a
   leaf-generic in config-core (see its charter).
 - **Synthesized tabs are ALWAYS lazy** (`load_on_open: false`) — a root can synthesize dozens of
@@ -251,15 +256,9 @@ bump silently changes the value and the app reads as "forgot my layout." This is
 constellation-wide rule, single-sourced in
 [shell-core's CLAUDE.md](https://github.com/Lockyc/shell-core/blob/main/CLAUDE.md); the
 config-crate copy's own rationale and test vectors live at `crates/lector-config/src/hash.rs`.
-lector has three such hashes:
+lector has two such hashes (a window's label is its sanitized title, from the `WindowSet` — no
+hash):
 
-- **Window id** — `hash.rs::fnv1a_64` hashes a window's `title` into `window_id`
-  (`identity::window_id`), which **is** the Tauri window label shell-core's geometry module keys a
-  window's saved bounds by. A rustc bump that reshuffled the hash would silently reset every
-  window's saved geometry to defaults — the same "forgot my layout" symptom the intro names, one
-  layer up from the geometry-store filename below. Renaming a window's title has the same effect
-  on purpose (see `identity.rs`): it's a *new* label, so its old saved bounds are orphaned, not
-  corrupted.
 - **Tab label identity** — `hash.rs::fnv1a_64` hashes a tab's canonicalized dir into its stable
   webview label; this copy stays in the config crate (label identity is its domain). **A tab's
   *title* is display-only, never an identity or address — duplicates are allowed**, and

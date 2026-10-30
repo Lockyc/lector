@@ -1,29 +1,18 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use lector_config::WindowTabs;
+use shell_core::windows::plan::{Slot, WindowDecl, WindowOp};
+use shell_core::windows::WindowSet;
+use std::collections::HashSet;
 use tauri::{Emitter, Manager};
 
 mod commands;
 mod reload;
 mod servers;
 mod webviews;
-
-/// Set once on `RunEvent::ExitRequested` (see [`run`]), which fires before every window's
-/// `Destroyed` during ⌘Q. Checked at the top of [`redock`] so a detached window's teardown doesn't
-/// reopen its (already-closing) origin window mid-quit. Never reset — lector doesn't prevent exit.
-static IS_QUITTING: AtomicBool = AtomicBool::new(false);
-
-/// Mark the app as quitting. Called once, from `RunEvent::ExitRequested`.
-pub(crate) fn mark_quitting() {
-    IS_QUITTING.store(true, Ordering::SeqCst);
-}
-
-/// Whether the app is quitting — see [`IS_QUITTING`].
-pub(crate) fn is_quitting() -> bool {
-    IS_QUITTING.load(Ordering::SeqCst)
-}
+mod windows;
 
 /// The opaque token identifying a popped-out tab's detached window
 /// (→ [`shell_core::detach::detached_label`]). A lector content-webview label is already
-/// `{window_id}:tab-<hash>` — globally unique across windows and Tauri-label-safe — so it *is* the
+/// `{window}:tab-<hash>` — globally unique across windows and Tauri-label-safe — so it *is* the
 /// token; the origin window is tracked on [`commands::LectorDetached`], never parsed back out of
 /// the label. Mirrors curator's `detach_window_token` exactly.
 pub(crate) fn detach_window_token(tab_label: &str) -> String {
@@ -44,13 +33,65 @@ fn log_config_warnings(warnings: &[lector_config::Warning]) {
     }
 }
 
-/// Apply a freshly-loaded config to live state, on both the initial load and every hot-reload: log
-/// its warnings, install the app-global chrome settings and every open window's theme, run the
-/// shared [`reload::reconcile`] (tab-server reconciliation — the same path for launch-time
-/// eager-start and hot-reload), and drop the webviews and active marks of tabs it removed. Callers
-/// that need more than this — launch's per-window `open_on_launch` selection, hot-reload's
-/// chrome-refresh event and format-on-save (which needs the raw source this function doesn't take)
-/// — do it themselves, after calling this.
+/// The labels of every open window, config order.
+fn open_labels(app: &tauri::AppHandle) -> Vec<String> {
+    app.state::<WindowSet>()
+        .entries()
+        .into_iter()
+        .filter(|e| e.open)
+        .map(|e| e.id)
+        .collect()
+}
+
+/// Emit an event to every open window's chrome sidebar.
+pub(crate) fn emit_to_all_chrome<S: serde::Serialize + Clone>(
+    app: &tauri::AppHandle,
+    event: &str,
+    payload: S,
+) {
+    for label in open_labels(app) {
+        let _ = app.emit_to(label.as_str(), event, payload.clone());
+    }
+}
+
+/// Every window of the last clean load under its [`WindowSet`] label, open or closed.
+fn labelled_windows(app: &tauri::AppHandle) -> Vec<(String, lector_config::WindowConfig)> {
+    let set = app.state::<WindowSet>();
+    app.state::<commands::AppState>()
+        .last_cfg()
+        .windows
+        .into_iter()
+        .filter_map(|w| set.label_for_title(&w.title).map(|label| (label, w)))
+        .collect()
+}
+
+/// Resolve every window's tabs under its current label and run the shared [`reload::reconcile`]
+/// (tab-server reconciliation — the same path for launch-time eager-start and hot-reload), then
+/// drop the webviews and active marks of tabs it removed.
+fn sync_tabs(app: &tauri::AppHandle) {
+    let state = app.state::<commands::AppState>();
+    let views = reload::reconcile(&state, &labelled_windows(app));
+
+    // A tab gone from the config (or relabelled by a `dir` change) has just lost its server: close
+    // its content webview and clear it as active, so neither a dead page nor an unhighlighted
+    // selection is left behind. A popped-out tab lives in its detached window and is kept.
+    let mut keep: HashSet<String> = views.into_iter().map(|v| v.label).collect();
+    keep.extend(state.detached_tab_labels());
+    state.retain_active(&keep);
+    for label in open_labels(app) {
+        let Some(win) = app.get_window(&label) else {
+            continue;
+        };
+        for wv in win.webviews() {
+            if wv.label() != win.label() && !keep.contains(wv.label()) {
+                let _ = wv.close();
+            }
+        }
+    }
+}
+
+/// Apply a freshly-loaded config's app-wide settings and every open window's theme, then
+/// [`sync_tabs`]. `cfg` must already be [`commands::AppState::set_last_cfg`]'s.
 fn apply_config(
     app: &tauri::AppHandle,
     cfg: &lector_config::Config,
@@ -65,116 +106,116 @@ fn apply_config(
         cfg.dark_mode,
         cfg.tab_digit_keys,
     );
-    for m in state.window_meta() {
-        if let Some(win) = app.get_window(&m.id) {
+    for label in open_labels(app) {
+        if let Some(win) = app.get_window(&label) {
             let _ = win.set_theme(theme_for(cfg.dark_mode));
         }
     }
-    let views = reload::reconcile(&state, &cfg.windows);
+    sync_tabs(app);
+}
 
-    // A tab gone from the config (or relabelled by a `dir` change) has just lost its server: close
-    // its content webview and clear it as active, so neither a dead page nor an unhighlighted
-    // selection is left behind. A popped-out tab lives in its detached window and is kept.
-    let mut keep: std::collections::HashSet<String> = views.into_iter().map(|v| v.label).collect();
-    keep.extend(state.detached_tab_labels());
-    state.retain_active(&keep);
-    for m in state.window_meta() {
-        let Some(win) = app.get_window(&m.id) else {
-            continue;
-        };
-        for wv in win.webviews() {
-            if wv.label() != win.label() && !keep.contains(wv.label()) {
-                let _ = wv.close();
-            }
-        }
+/// Show a freshly built window's first tab exactly the way a click would (`commands::select`): the
+/// tab it last had active (a reopened window — closing it ended the webview, not the server or the
+/// mark), else its startup tab (`WindowTabs::startup_label` — the first load_on_open tab by
+/// default, or whatever `open_on_launch` overrides to). A popped-out tab is never picked: its
+/// webview label belongs to the detached window. A failure (e.g. the tab's dir doesn't exist yet)
+/// stays cold.
+fn show_first_tab(app: &tauri::AppHandle, label: &str) {
+    let state = app.state::<commands::AppState>();
+    let detached = state.detached_tab_labels();
+    let startup = || {
+        let title = app
+            .state::<WindowSet>()
+            .entries()
+            .into_iter()
+            .find(|e| e.id == label)?
+            .title;
+        state.window_cfg(&title)?.startup_label(label)
+    };
+    let Some(tab) = state
+        .active_for(label)
+        .or_else(startup)
+        .filter(|t| !detached.contains(t))
+    else {
+        return;
+    };
+    if let Err(e) = commands::select(app, &state, &tab) {
+        eprintln!("couldn't show tab {tab:?}: {e}");
+        state.clear_active_if(&tab);
     }
 }
 
-/// Make the set of built windows match `cfg.windows`: build every configured window that doesn't
-/// already have a live Tauri window, installing its accent colour and a [`commands::WindowMeta`]
-/// entry (so the menu spine's Window submenu and a later reopen can find it — see that struct's
-/// doc), and destroy every built window the config no longer defines
-/// ([`reload::removed_window_ids`]) along with the detached windows of tabs popped out of it,
-/// dropping its `WindowMeta`. Existing windows still in the config are left untouched. Returns the
-/// ids it built, so a caller running `open_on_launch` selection afterwards (which needs
-/// `apply_config` to have populated tab state first, and must not re-select on top of an
-/// already-open window's current tab) knows which ones are new. The removed windows' tab servers
-/// are stopped by the `apply_config` that follows, whose `retain` no longer sees their labels.
-///
-/// Used by `run()`'s setup (every window is new there), [`reload_now`] and the config-file
-/// watcher's clean hot-reload — a failed parse never reaches it, so it never closes anything.
-///
-/// Replacements are built before anything is destroyed, and when nothing else would stay on screen
-/// the home surface is shown first: Tauri exits the app the moment its last window is destroyed.
-fn reconcile_windows(app: &tauri::AppHandle, cfg: &lector_config::Config) -> Vec<String> {
-    let state = app.state::<commands::AppState>();
-    let mut meta = state.window_meta();
-    let removed = reload::removed_window_ids(&meta, &cfg.windows);
-    meta.retain(|m| !removed.contains(&m.id));
-    let detached = state.take_detached_from(&removed);
-
-    let mut built = Vec::new();
-    for win_cfg in &cfg.windows {
-        let wid = lector_config::identity::window_id(&win_cfg.title);
-        if app.get_window(&wid).is_some() {
-            continue;
-        }
-        if webviews::build_window(
-            app,
-            &wid,
-            &win_cfg.title,
-            win_cfg.width as f64,
-            win_cfg.height as f64,
-        )
-        .is_err()
-        {
-            continue;
-        }
-        state.set_colour(&wid, win_cfg.colour.clone());
-        meta.retain(|m| m.id != wid);
-        meta.push(commands::WindowMeta {
-            id: wid.clone(),
-            title: win_cfg.title.clone(),
-            width: win_cfg.width as f64,
-            height: win_cfg.height as f64,
-            colour: win_cfg.colour.clone(),
-        });
-        built.push(wid);
-    }
-    state.set_window_meta(meta.clone());
-
-    let doomed: Vec<String> = removed.into_iter().chain(detached).collect();
-    let survivor = app.windows().keys().any(|label| !doomed.contains(label));
-    if !doomed.is_empty() && !survivor {
-        let entries = reload::window_entries(app, &meta);
-        let path = lector_config::resolve_config_path();
-        reload::reconcile_home(app, &entries, &path.to_string_lossy(), path.exists(), None);
-    }
-    for label in &doomed {
-        if let Some(win) = app.get_window(label) {
-            let _ = win.destroy();
-        }
-    }
-    built
+/// [`WindowHost::build`](shell_core::windows::WindowHost::build): build `slot`'s window and record
+/// its accent. Its tabs are shown by the caller once they resolve under its label.
+pub(crate) fn open_window(
+    app: &tauri::AppHandle,
+    slot: &Slot,
+) -> tauri::Result<tauri::WebviewWindow> {
+    let window = webviews::build_window(
+        app,
+        &slot.label,
+        &slot.decl.title,
+        slot.decl.width,
+        slot.decl.height,
+    )?;
+    app.state::<commands::AppState>()
+        .set_colour(&slot.label, slot.decl.colour.clone());
+    Ok(window)
 }
 
-/// Select each newly-`built` window's startup tab (`WindowConfig::startup_label` — the first
-/// load_on_open tab by default, or whatever `open_on_launch` overrides to) exactly the way a click
-/// would (`commands::select`). Windows that were already open keep their current tab. A failure
-/// (e.g. the tab's dir doesn't exist yet) just stays cold. Runs after `apply_config`, which
-/// installs the views `select` resolves.
-fn select_startup_tabs(app: &tauri::AppHandle, cfg: &lector_config::Config, built: &[String]) {
-    let state = app.state::<commands::AppState>();
-    for win_cfg in &cfg.windows {
-        let wid = lector_config::identity::window_id(&win_cfg.title);
-        if !built.contains(&wid) {
-            continue;
-        }
-        if let Some(label) = win_cfg.startup_label() {
-            if let Err(e) = commands::select(app, &state, &label) {
-                eprintln!("startup selection failed for {label:?}: {e}");
+/// [`WindowHost::closed`](shell_core::windows::WindowHost::closed). A window the user closed keeps
+/// its servers and active mark for a reopen; one gone from the config takes its popped-out tabs
+/// with it (their servers stop at the next [`reload::reconcile`], which no longer sees them).
+pub(crate) fn window_closed(app: &tauri::AppHandle, label: &str) {
+    let set = app.state::<WindowSet>();
+    if !set.entries().iter().any(|e| e.id == label) {
+        let state = app.state::<commands::AppState>();
+        for detached in state.take_detached_from(&HashSet::from([label.to_string()])) {
+            if let Some(w) = app.get_window(&detached) {
+                let _ = w.destroy();
             }
         }
+        sync_detached(app);
+    }
+    // During ⌘Q every window is being destroyed and the menu dies with the app.
+    if !set.is_quitting() {
+        refresh_menu(app);
+    }
+}
+
+/// [`WindowHost::retitled`](shell_core::windows::WindowHost::retitled): `label`'s title or colour
+/// changed in place; repaint its banner.
+pub(crate) fn window_retitled(app: &tauri::AppHandle, label: &str, decl: &WindowDecl) {
+    app.state::<commands::AppState>()
+        .set_colour(label, decl.colour.clone());
+    let _ = app.emit_to(label, "config-reloaded", ());
+}
+
+/// Mirror the popped-out window count into the [`WindowSet`], which keeps the home surface away
+/// while one is up.
+pub(crate) fn sync_detached(app: &tauri::AppHandle) {
+    let count = app
+        .state::<commands::AppState>()
+        .detached
+        .lock()
+        .expect("detached lock")
+        .len();
+    app.state::<WindowSet>().set_detached_count(app, count);
+}
+
+/// Every window's `CloseRequested` (the native red button, ⌘⇧W, or the [`WindowSet`] closing it);
+/// the close always proceeds. A **user** close of the **last** window quits lector
+/// (last-window-quit), rather than leaving the home surface up. A close the set made (a delete, a
+/// reload removing the window) has already dropped the window from the set's open windows, so it
+/// never quits: the home surface takes over.
+pub(crate) fn on_real_window_close(app: &tauri::AppHandle, label: &str) {
+    let user_close = app
+        .state::<WindowSet>()
+        .entries()
+        .iter()
+        .any(|e| e.id == label && e.open);
+    if user_close && app.windows().len() <= 1 {
+        app.exit(0);
     }
 }
 
@@ -241,36 +282,15 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
 }
 
 /// The menu spine's Window submenu selector, and the home surface's per-window button
-/// (`shell_home_open_window`): focus `window_id` if it's already open, otherwise rebuild it from
-/// its stored [`commands::WindowMeta`] (present iff `window_id` was ever built this run — the
-/// spine and the home surface only ever offer ids that came from that same list, so a lookup miss
-/// here would mean one of them drifted out of sync with it). A rebuilt window re-shows the tab it
-/// last had active — closing the window destroyed that tab's webview but not its `active` mark or
-/// server — or, if that fails, clears the mark so the sidebar doesn't highlight an empty hole.
-/// Reconciles the home surface afterwards so it closes now that a real window exists again.
-fn open_or_focus_window(app: &tauri::AppHandle, window_id: &str) {
-    if let Some(win) = app.get_window(window_id) {
-        let _ = win.set_focus();
-        return;
+/// (`shell_home_open_window`): focus `label`'s window, or reopen it. A reopened window can sit on a
+/// new label (renamed while open), so its tabs are resolved again before its first tab shows.
+fn open_or_focus_window(app: &tauri::AppHandle, label: &str) {
+    let was_open = app.get_window(label).is_some();
+    app.state::<WindowSet>().open_or_focus(app, label);
+    if !was_open && app.get_window(label).is_some() {
+        sync_tabs(app);
+        show_first_tab(app, label);
     }
-    let state = app.state::<commands::AppState>();
-    let meta = state.window_meta();
-    if let Some(m) = meta.iter().find(|m| m.id == window_id) {
-        if webviews::build_window(app, &m.id, &m.title, m.width, m.height).is_ok() {
-            if let Some(label) = state.active_for(window_id) {
-                // A popped-out tab's webview label is taken by its detached window.
-                if state.detached_tab_labels().contains(&label)
-                    || commands::select(app, &state, &label).is_err()
-                {
-                    state.clear_active_if(&label);
-                }
-            }
-        }
-    }
-    let entries = reload::window_entries(app, &meta);
-    let path = lector_config::resolve_config_path();
-    reload::reconcile_home(app, &entries, &path.to_string_lossy(), path.exists(), None);
-    // The Window submenu's tick and "(closed)" label (muda also flipped the clicked item's tick).
     refresh_menu(app);
 }
 
@@ -283,15 +303,13 @@ fn open_or_focus_window(app: &tauri::AppHandle, window_id: &str) {
 ///
 /// Order matters: the origin+tab+port are read (not removed) first, so that if the origin window was
 /// closed while the tab was out, [`open_or_focus_window`] reopens it while the tab is STILL in
-/// `AppState::detached` — harmless, since reopening a window never touches `detached` and only
-/// re-shows the origin's own active tab, which can't be the popped-out one (`pop_out_tab` clears
-/// it). Only then is the bookkeeping removed and the webview recreated on the origin, which then
-/// becomes active.
+/// `AppState::detached` — so the reopen never picks the popped-out tab as its first tab. Only then
+/// is the bookkeeping removed and the webview recreated on the origin, which then becomes active.
 pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
     // ⌘Q teardown: `RunEvent::ExitRequested` fires before every window's `Destroyed`. Don't reopen
     // an origin or recreate a webview mid-quit — everything is being torn down, and the servers are
     // about to be shut down wholesale anyway (see `run`'s `RunEvent::Exit` arm).
-    if is_quitting() {
+    if app.state::<WindowSet>().is_quitting() {
         return;
     }
     let state = app.state::<commands::AppState>();
@@ -307,8 +325,7 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
         return; // already redocked (double-close) — nothing to do
     };
 
-    // Reopen the origin if the user closed it while the tab was popped out (case: another window or
-    // the detached window itself kept the app alive past last-window-quit).
+    // Reopen the origin if the user closed it while the tab was popped out.
     if app.get_window(&origin_wid).is_none() {
         open_or_focus_window(app, &origin_wid);
     }
@@ -324,6 +341,7 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
     {
         return;
     }
+    sync_detached(app);
 
     if state.view(&tab_label).is_none() {
         // The tab (or its whole window) was removed from the config while it was popped out — it
@@ -348,73 +366,60 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
     let _ = app.emit_to(origin_wid.as_str(), "config-reloaded", ());
 }
 
-/// Re-run launch reconciliation for windows the app has never built — currently only the home
-/// surface's "Create a starter config" button, which turns a `NoConfig` state (necessarily zero
-/// windows built yet, since no config ever loaded) into a real config the app has never seen.
-/// Builds every window the freshly-written config defines, applies tab state, runs `open_on_launch`
-/// selection on exactly the newly-built windows (mirroring `run()`'s setup), and reconciles the
-/// home surface — which closes it, since a real window now exists.
+/// Load the config and apply it — the home surface's "Create a starter config" button, which turns
+/// a `NoConfig` state into a real config the app has never seen.
 pub(crate) fn reload_now(app: &tauri::AppHandle) {
     let path = lector_config::resolve_config_path();
     match lector_config::load_config(&path) {
-        Ok((cfg, warnings)) => apply_clean_load(app, &cfg, &warnings, &path),
+        Ok((cfg, warnings)) => apply_clean_load(app, &cfg, &warnings),
         Err(e) => eprintln!("config error: {e}"),
     }
 }
 
 /// Apply a cleanly loaded config — the one sequence the config watcher, [`reload_now`] and the
-/// chrome's ⟳ rescan all run: build windows the config added (and close dropped ones), apply tab
-/// state, pick startup tabs on newly built windows, refresh every chrome, rebuild the app menu (so
-/// a `tab_digit_keys` flip and the Window submenu track the config) and reconcile the home surface.
+/// chrome's ⟳ rescan all run: the [`WindowSet`] opens added windows, closes removed ones and
+/// recolours kept ones (a window the user closed stays closed); then tab state is applied, each
+/// newly opened window shows its first tab, every chrome refreshes, and the app menu is rebuilt (so
+/// a `tab_digit_keys` flip and the Window submenu track the config).
 pub(crate) fn apply_clean_load(
     app: &tauri::AppHandle,
     cfg: &lector_config::Config,
     warnings: &[lector_config::Warning],
-    config_path: &std::path::Path,
 ) {
-    let built = reconcile_windows(app, cfg);
+    app.state::<commands::AppState>().set_last_cfg(cfg.clone());
+    let opened: Vec<String> = app
+        .state::<WindowSet>()
+        .apply(app, windows::decls(cfg))
+        .into_iter()
+        .filter_map(|op| match op {
+            WindowOp::Open(slot) => Some(slot.label),
+            _ => None,
+        })
+        .collect();
     apply_config(app, cfg, warnings);
-    select_startup_tabs(app, cfg, &built);
-    let state = app.state::<commands::AppState>();
-    for m in state.window_meta() {
-        let _ = app.emit_to(m.id.as_str(), "config-reloaded", ());
+    for label in &opened {
+        show_first_tab(app, label);
     }
+    emit_to_all_chrome(app, "config-reloaded", ());
     refresh_menu(app);
-    let entries = reload::window_entries(app, &state.window_meta());
-    reload::reconcile_home(
-        app,
-        &entries,
-        &config_path.to_string_lossy(),
-        config_path.exists(),
-        None,
-    );
 }
 
 /// Surface a config that failed to load: every chrome and the home surface show the error, and
 /// the last-good config (and every running server) is left untouched.
-pub(crate) fn surface_load_error(app: &tauri::AppHandle, msg: &str, config_path: &std::path::Path) {
-    let state = app.state::<commands::AppState>();
-    for m in state.window_meta() {
-        let _ = app.emit_to(m.id.as_str(), "config-error", msg.to_string());
-    }
-    let entries = reload::window_entries(app, &state.window_meta());
-    reload::reconcile_home(
-        app,
-        &entries,
-        &config_path.to_string_lossy(),
-        config_path.exists(),
-        Some(msg),
-    );
+pub(crate) fn surface_load_error(app: &tauri::AppHandle, msg: &str) {
+    emit_to_all_chrome(app, "config-error", msg.to_string());
+    app.state::<WindowSet>()
+        .set_load_error(app, Some(msg.to_string()));
 }
 
 /// Build and install the app menu from the current state: shell-core's App, Edit, Tab, Config and
 /// Window submenus (lector adds no items of its own).
 ///
 /// Rebuilt on every clean load (a `tab_digit_keys` flip applies without a relaunch) and whenever a
-/// window opens or closes (the Window submenu's ticks and "(closed)" labels).
+/// window opens, closes, is renamed or deleted (the Window submenu's ticks and "(closed)" labels).
 fn refresh_menu(app: &tauri::AppHandle) {
     let state = app.state::<commands::AppState>();
-    let entries = reload::window_entries(app, &state.window_meta());
+    let entries = app.state::<WindowSet>().entries();
     let built = shell_core::menu::build_spine(
         app,
         shell_core::menu::SpineConfig {
@@ -460,10 +465,16 @@ pub fn run() {
                     (lector_config::Config::default(), Vec::new())
                 }
             };
+            app.state::<commands::AppState>().set_last_cfg(cfg.clone());
 
-            // Build every configured window (+ its accent colour) first, so the reconcile below —
-            // and the `open_on_launch` selection after it — have somewhere to point a webview at.
-            let built = reconcile_windows(app.handle(), &cfg);
+            // The window set opens the `open_on_start` windows, lists the rest, and shows the home
+            // surface whenever no window is open (a failed load, no `[[window]]`, all closed).
+            app.manage(WindowSet::new("lector", path.clone(), windows::LectorHost));
+            let set = app.state::<WindowSet>();
+            match load_error {
+                None => set.materialize(app.handle(), windows::decls(&cfg)),
+                Some(e) => set.set_load_error(app.handle(), Some(e)),
+            }
 
             apply_config(app.handle(), &cfg, &warnings);
 
@@ -479,11 +490,10 @@ pub fn run() {
                 win.get_webview(&label)
             });
 
-            select_startup_tabs(app.handle(), &cfg, &built);
-            let state = app.state::<commands::AppState>();
-
+            for label in open_labels(app.handle()) {
+                show_first_tab(app.handle(), &label);
+            }
             refresh_menu(app.handle());
-            let window_entries = reload::window_entries(app.handle(), &state.window_meta());
 
             let cfg_for_menu = path.clone();
             app.on_menu_event(move |app, event| {
@@ -497,13 +507,21 @@ pub fn run() {
                 if id == shell_core::menu::ids::TAB_DIGIT_CYCLE {
                     let next = app.state::<commands::AppState>().tab_digit_keys().toggled();
                     if let Err(e) = commands::write_tab_digit_keys(&cfg_for_menu, next) {
-                        surface_load_error(app, &e, &cfg_for_menu);
+                        surface_load_error(app, &e);
                         refresh_menu(app);
                     }
                     return;
                 }
-                if let Some(wid) = shell_core::menu::selected_window(id) {
-                    open_or_focus_window(app, wid);
+                if id == shell_core::menu::ids::NEW_WINDOW {
+                    windows::new_window(app);
+                    return;
+                }
+                if let Some(action) = windows::BannerAction::parse(id) {
+                    action.run(app);
+                    return;
+                }
+                if let Some(label) = shell_core::menu::selected_window(id) {
+                    open_or_focus_window(app, label);
                     return;
                 }
                 let Some(focused) = app.get_focused_window() else {
@@ -518,18 +536,6 @@ pub fn run() {
                     on_spine_action(app, routed);
                 }
             });
-
-            // The home surface: never stranded invisible. `has_windows` is derived inside
-            // `reconcile_home` from `window_entries`'s own `open` flags, which are all `true` here
-            // (every window built above is live) — so this only actually shows anything when the
-            // config had zero `[[window]]` blocks or failed to load at all.
-            reload::reconcile_home(
-                app.handle(),
-                &window_entries,
-                &path.to_string_lossy(),
-                path.exists(),
-                load_error.as_deref(),
-            );
 
             // Watch the config file and hot-reload on change, keeping the last-good config (and
             // surfacing the error to every window's chrome) if the new contents don't
@@ -565,13 +571,13 @@ pub fn run() {
                         } else {
                             None
                         };
-                        apply_clean_load(&app_handle, &new_cfg, &warnings, &fmt_path);
+                        apply_clean_load(&app_handle, &new_cfg, &warnings);
                         self_write
                     }
                     Err(e) => {
                         let msg = e.to_string();
                         eprintln!("config error: {msg}");
-                        surface_load_error(&app_handle, &msg, &fmt_path);
+                        surface_load_error(&app_handle, &msg);
                         None
                     }
                 }
@@ -595,29 +601,18 @@ pub fn run() {
             commands::shell_home_create_config,
             commands::shell_home_edit_config,
             commands::shell_home_open_window,
+            commands::window_menu,
         ])
         .build(tauri::generate_context!())
         .expect("error while building lector");
 
     app.run(|app_handle, event| {
         // ExitRequested fires before every window's Destroyed during ⌘Q; mark quitting so a
-        // detached window's teardown doesn't reopen its origin mid-quit (see `redock`).
+        // detached window's teardown doesn't reopen its origin mid-quit (see `redock`) and the
+        // closing windows don't raise the home surface.
         if let tauri::RunEvent::ExitRequested { .. } = event {
-            mark_quitting();
-        }
-        // A closed config window: the Window submenu's tick becomes "(closed)". Pop-outs and the
-        // home surface aren't listed there.
-        if let tauri::RunEvent::WindowEvent {
-            label,
-            event: tauri::WindowEvent::Destroyed,
-            ..
-        } = &event
-        {
-            if !is_quitting()
-                && !shell_core::detach::is_detached_label(label)
-                && label != shell_core::home::HOME_LABEL
-            {
-                refresh_menu(app_handle);
+            if let Some(set) = app_handle.try_state::<WindowSet>() {
+                set.mark_quitting();
             }
         }
         // Shut down every live server and join its threads on quit — otherwise a compositor
@@ -641,7 +636,7 @@ pub fn validate_cli(path: Option<std::path::PathBuf>) -> i32 {
             println!("ok: {} ({} window(s))", path.display(), cfg.windows.len());
             for w in &cfg.windows {
                 println!("  window {:?}", w.title);
-                for v in w.tab_views() {
+                for v in w.tab_views(&w.title) {
                     let group = v
                         .group
                         .as_deref()
@@ -671,11 +666,11 @@ mod tests {
 
     #[test]
     fn detach_token_round_trips_through_the_detached_label() {
-        // A content-webview label is `{origin_wid}:tab-<hash>` — the token IS that label, and it
+        // A content-webview label is `{window}:tab-<hash>` — the token IS that label, and it
         // must survive shell-core's detached-label wrapping so a detached window is recognised
         // (is_detached_label) and its token recoverable (detach_token). Deterministic, too. Mirrors
         // curator's identical test for its own `detach_window_token`.
-        let tab_label = "w0123456789abcdef:tab-00112233445566ff";
+        let tab_label = "Docs:tab-00112233445566ff";
         let token = detach_window_token(tab_label);
         assert_eq!(token, detach_window_token(tab_label)); // stable
         let label = shell_core::detach::detached_label(&token);

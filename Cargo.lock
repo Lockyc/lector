@@ -486,7 +486,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "chrome-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/chrome-core?rev=cbb145cc32ffa939f7c4caf3e92bdf871d8d1bfb#cbb145cc32ffa939f7c4caf3e92bdf871d8d1bfb"
+source = "git+https://github.com/Lockyc/chrome-core?rev=abd6b7b3646ea4f31558331fc249e98c64f4879b#abd6b7b3646ea4f31558331fc249e98c64f4879b"
 
 [[package]]
 name = "chrono"
@@ -605,13 +605,14 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=23cd86aa7bccc2b7021fd339627e4dce4006e364#23cd86aa7bccc2b7021fd339627e4dce4006e364"
+source = "git+https://github.com/Lockyc/config-core?rev=811168cf870a843f5c9067403158032ab18af520#811168cf870a843f5c9067403158032ab18af520"
 dependencies = [
  "dirs",
  "serde",
  "taplo",
  "tempfile",
  "thiserror 2.0.18",
+ "toml 0.8.23",
  "toml_edit 0.25.13+spec-1.1.0",
 ]
 
@@ -3701,7 +3702,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.3.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=147435dcbb9c6144442cd9d23f74561087792f46#147435dcbb9c6144442cd9d23f74561087792f46"
+source = "git+https://github.com/Lockyc/shell-core?rev=5e6e8c9041f74c1b059f687aa47b8eb6726292e0#5e6e8c9041f74c1b059f687aa47b8eb6726292e0"
 dependencies = [
  "block2",
  "getrandom 0.2.17",

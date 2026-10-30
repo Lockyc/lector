@@ -70,8 +70,9 @@ sidebar shows an *Update available* bar with a one-click **Update & Relaunch**.
 - **Pop-out tabs** — **⌘⇧O** (or the pop-out icon on a row's letter tile) moves the active tab
   into its own window. It stays loaded across the hop; closing the window returns the
   tab to where it came from.
-- **Windows and the home surface** — **⌘⇧W** closes a window and the **Window** menu reopens it.
-  With no window open, lector shows a home surface listing every window; with no config, it
+- **Windows and the home surface** — **⌘⇧W** closes a window and the **Window** menu reopens it;
+  a closed window stays closed when the config reloads. **Window ▸ New Window…** adds one, and
+  right-clicking a window's name banner edits its title and colour or deletes it. With no window open, lector shows a home surface listing every window; with no config, it
   offers a **Create a starter config** button. The **Config** menu opens the config file or
   reveals it in Finder.
 - **Native navigation.** Mouse side-buttons drive back/forward through a tab's history, and a
@@ -126,6 +127,7 @@ colour = "#4a9"
 |---|---|---|
 | `title` | *required* | Window title; unique across windows. |
 | `width` / `height` | `1500` / `1000` | First-run size in logical pixels; after that lector remembers each window's size and position. |
+| `open_on_start` | `true` | `false` keeps the window closed at launch; it stays listed in the **Window** menu. |
 | `open_on_launch` | `false` | `false` opens the first `load_on_open` tab, else a blank screen; `true` opens the first tab even if it isn't loaded. |
 | `colour` | none | `#rgb` / `#rrggbb` accent for the window's name banner and tint. |
 

@@ -192,6 +192,10 @@ async function mountChrome() {
       onPopIn(tabId) {
         invoke("pop_in_tab", { label: tabId }).catch((e) => sb.setError(String(e)));
       },
+      // Right-click on the banner: Rust pops the native Edit Window… / Delete Window… menu.
+      onBannerMenu({ x, y }) {
+        invoke("window_menu", { x, y }).catch((e) => sb.setError(String(e)));
+      },
       onRescan() {
         // chrome-core's ⟳ control on a [[window.root]] section header. The component passes the
         // section (group) name; lector re-scans every root in the config, so it's ignored. The

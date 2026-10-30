@@ -36,8 +36,8 @@ impl WindowHost for LectorHost {
         crate::window_closed(app);
     }
 
-    fn retitled(&self, app: &AppHandle, label: &str, decl: &WindowDecl) {
-        crate::window_retitled(app, label, decl);
+    fn retitled(&self, app: &AppHandle, label: &str, old: &str, decl: &WindowDecl) {
+        crate::window_retitled(app, label, old, decl);
     }
 
     fn write(&self, _app: &AppHandle, write: &WindowWrite) -> Result<(), String> {

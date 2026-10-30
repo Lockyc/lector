@@ -1,5 +1,5 @@
 use lector_config::WindowTabs;
-use shell_core::windows::plan::{Slot, WindowDecl, WindowOp};
+use shell_core::windows::plan::{entry_for_title, Slot, WindowDecl, WindowOp};
 use shell_core::windows::WindowSet;
 use std::collections::HashSet;
 use tauri::{Emitter, Manager};
@@ -54,14 +54,14 @@ pub(crate) fn emit_to_all_chrome<S: serde::Serialize + Clone>(
     }
 }
 
-/// Every window of the last clean load under its [`WindowSet`] label, open or closed.
-fn labelled_windows(app: &tauri::AppHandle) -> Vec<(String, lector_config::WindowConfig)> {
-    let set = app.state::<WindowSet>();
+/// Every window of the last clean load under its [`WindowSet`] label, and whether it is open.
+fn labelled_windows(app: &tauri::AppHandle) -> Vec<(String, lector_config::WindowConfig, bool)> {
+    let entries = app.state::<WindowSet>().entries();
     app.state::<commands::AppState>()
         .last_cfg()
         .windows
         .into_iter()
-        .filter_map(|w| set.label_for_title(&w.title).map(|label| (label, w)))
+        .filter_map(|w| entry_for_title(&entries, &w.title).map(|e| (e.id.clone(), w, e.open)))
         .collect()
 }
 
@@ -166,13 +166,14 @@ pub(crate) fn open_window(
 
 /// [`WindowHost::closed`](shell_core::windows::WindowHost::closed). A window the user closed keeps
 /// its servers and active mark for a reopen; one gone from the config takes its popped-out tabs
-/// with it (their servers stop at the next [`reload::reconcile`], which no longer sees them).
+/// with it (their servers stop at the next [`reload::reconcile`], which no longer sees them), and
+/// every other popped-out tab follows its origin's current label
+/// ([`commands::AppState::settle_detached`]).
 pub(crate) fn window_closed(app: &tauri::AppHandle) {
     let set = app.state::<WindowSet>();
-    // By title: a window renamed in place and closed is no longer listed under `label`.
     let orphans = app
         .state::<commands::AppState>()
-        .take_orphaned_detached(&set.entries());
+        .settle_detached(&set.entries());
     if !orphans.is_empty() {
         for detached in orphans {
             if let Some(w) = app.get_window(&detached) {
@@ -187,26 +188,14 @@ pub(crate) fn window_closed(app: &tauri::AppHandle) {
     }
 }
 
-/// [`WindowHost::retitled`](shell_core::windows::WindowHost::retitled): `label`'s title or colour
-/// changed in place; carry it into `last_cfg` (so [`labelled_windows`] keeps the window before the
-/// reload echo) and into the origin titles of the tabs popped out of it, and repaint its banner.
-pub(crate) fn window_retitled(app: &tauri::AppHandle, label: &str, decl: &WindowDecl) {
+/// [`WindowHost::retitled`](shell_core::windows::WindowHost::retitled): the window titled `old`,
+/// under `label`, changed title or colour in place; carry it into `last_cfg` (so
+/// [`labelled_windows`] keeps the window before the reload echo) and into the origin titles of the
+/// tabs popped out of it, and repaint its banner.
+pub(crate) fn window_retitled(app: &tauri::AppHandle, label: &str, old: &str, decl: &WindowDecl) {
     let state = app.state::<commands::AppState>();
-    let set = app.state::<WindowSet>();
-    // The set's entries and `last_cfg` list the same windows in the same order; `label` is the
-    // pre-rename one, which a closed window has already lost.
-    let title = decl.title.trim();
-    let old = set
-        .entries()
-        .iter()
-        .position(|e| e.title.trim() == title)
-        .and_then(|i| state.last_cfg().windows.get(i).map(|w| w.title.clone()));
-    if let Some(old) = old {
-        state.retitle_origins(&old, title);
-    }
-    state.retitle_window(&decl.title, decl.colour.clone(), |t| {
-        set.label_for_title(t).is_some()
-    });
+    state.retitle_origins(old, &decl.title);
+    state.retitle_window(old, &decl.title, decl.colour.clone());
     state.set_colour(label, decl.colour.clone());
     let _ = app.emit_to(label, "config-reloaded", ());
 }

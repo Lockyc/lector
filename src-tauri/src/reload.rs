@@ -11,10 +11,11 @@ use crate::commands::AppState;
 use lector_config::{TabView, WindowConfig, WindowTabs};
 use std::collections::HashSet;
 
-/// Re-resolve every window's tabs against `windows` (each under its `WindowSet` label), install them as the new last-good views,
-/// retain only servers whose tab survived (this is what stops a removed tab's server — see
-/// `Servers::retain`'s doc for the leak it prevents), and eager-start every `load_on_open` tab
-/// that isn't already live.
+/// Re-resolve every window's tabs against `windows` (each under its `WindowSet` label, and whether
+/// it is open), install them as the new last-good views, retain only servers whose tab survived
+/// (this is what stops a removed tab's server — see `Servers::retain`'s doc for the leak it
+/// prevents), and eager-start every `load_on_open` tab of an open window that isn't already live.
+/// A closed window's tabs start when it opens, which reconciles again.
 ///
 /// Never tears down a server outside of what `retain` drops: an already-live tab that is still
 /// present keeps running (whether or not `load_on_open` is still true for it — going from eager to
@@ -24,17 +25,22 @@ use std::collections::HashSet;
 ///
 /// Returns the new tab views, already installed into `state` — callers that need to act on them
 /// further (launch's `open_on_launch` selection) don't need a second `views_for_window` round-trip.
-pub fn reconcile(state: &AppState, windows: &[(String, WindowConfig)]) -> Vec<TabView> {
+pub fn reconcile(state: &AppState, windows: &[(String, WindowConfig, bool)]) -> Vec<TabView> {
     // Discovered projects from each window's `[[window.root]]`s are folded in here so BOTH callers —
     // launch and hot-reload — pick up roots through the one choke point, and `retain`/eager-start below
     // treat a discovered tab like any other. Scanning per reconcile is what makes `rescan_root` a plain
     // re-call of this path.
     let all_views: Vec<TabView> = windows
         .iter()
-        .flat_map(|(label, w)| {
+        .flat_map(|(label, w, _)| {
             let discovered = lector_config::discover_projects(&w.resolved_roots());
             w.tab_views_with_discovered(label, &discovered)
         })
+        .collect();
+    let open: HashSet<&str> = windows
+        .iter()
+        .filter(|(_, _, open)| *open)
+        .map(|(label, _, _)| label.as_str())
         .collect();
     state.set_views(all_views.clone());
 
@@ -47,8 +53,9 @@ pub fn reconcile(state: &AppState, windows: &[(String, WindowConfig)]) -> Vec<Ta
     labels.extend(state.detached_tab_labels());
     state.servers.retain(&labels);
 
+    let in_open = |label: &str| shell_core::window_of(label).is_some_and(|w| open.contains(w));
     for view in &all_views {
-        if view.load_on_open && !state.servers.is_alive(&view.label) {
+        if view.load_on_open && in_open(&view.label) && !state.servers.is_alive(&view.label) {
             let dir = lector_config::expand_tilde(&view.dir);
             if let Err(e) = state.servers.start(&view.label, &dir) {
                 eprintln!("eager-start failed for tab {:?}: {e}", view.title);
@@ -83,13 +90,29 @@ mod tests {
             .remove(0)
     }
 
-    /// `win` under the window label `W`.
-    fn labelled(win: &WindowConfig) -> Vec<(String, WindowConfig)> {
-        vec![("W".to_string(), win.clone())]
+    /// `win` under the window label `W`, open.
+    fn labelled(win: &WindowConfig) -> Vec<(String, WindowConfig, bool)> {
+        vec![("W".to_string(), win.clone(), true)]
     }
 
     #[test]
-    fn take_orphaned_detached_takes_only_the_removed_origins_tabs() {
+    fn a_closed_windows_eager_tabs_stay_cold_until_it_opens() {
+        let dir = scratch("closed");
+        let win = window_with("W", &dir, true);
+        let state = AppState::new();
+        let views = reconcile(&state, &[("W".into(), win.clone(), false)]);
+        assert!(!state.servers.is_alive(&views[0].label));
+        reconcile(&state, &labelled(&win));
+        assert!(state.servers.is_alive(&views[0].label));
+        // Closing it again keeps the running server: only the config decides what stops.
+        reconcile(&state, &[("W".into(), win, false)]);
+        assert!(state.servers.is_alive(&views[0].label));
+        state.servers.shutdown_all();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn settle_detached_takes_the_removed_origins_tabs_and_rehomes_the_rest() {
         let state = AppState::new();
         let gone = "Gone".to_string();
         let kept = "Kept".to_string();
@@ -105,19 +128,20 @@ mod tests {
             );
         }
 
+        // "Kept" closed after a rename in place: its slot is labelled "Kept-new" now.
         let entries = [shell_core::menu::WindowEntry {
-            id: kept.clone(),
+            id: "Kept-new".into(),
             title: kept.clone(),
             open: false,
             colour: None,
         }];
-        let taken = state.take_orphaned_detached(&entries);
+        let taken = state.settle_detached(&entries);
 
         assert_eq!(taken, vec!["d-gone".to_string()]);
         assert_eq!(
             state.detached_tab_labels(),
-            HashSet::from([format!("{kept}:tab-x")]),
-            "a kept window's popped-out tab must stay detached"
+            HashSet::from(["Kept-new:tab-x".to_string()]),
+            "a kept window's popped-out tab stays detached, off the label its window freed"
         );
     }
 

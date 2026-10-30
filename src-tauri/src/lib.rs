@@ -30,11 +30,6 @@ pub(crate) fn detach_window_token(tab_label: &str) -> String {
     tab_label.to_string()
 }
 
-/// The detached window's banner height (matches shell-core's `detach.html` `#banner`, 2.25rem ≈
-/// 36px). Only used to size the recreated webview's BIRTH rect so it doesn't flash full-height for
-/// one frame before `detach.html`'s own `set_hole_rect` lands and reports the exact hole.
-pub(crate) const DETACH_BANNER_H: f64 = 36.0;
-
 /// Window theme for a given `dark_mode` setting. `None` = follow the system.
 pub(crate) fn theme_for(dark_mode: bool) -> Option<tauri::Theme> {
     dark_mode.then_some(tauri::Theme::Dark)

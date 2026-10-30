@@ -558,6 +558,9 @@ pub fn pop_out_tab(
         shell_core::detach::wire_return(&app, &detached_label, move || {
             crate::redock(&app2, &label2)
         });
+        if let Some(win) = app.get_window(&detached_label) {
+            shell_core::web::content::wire_close_pages(&win);
+        }
     }
     Ok(())
 }

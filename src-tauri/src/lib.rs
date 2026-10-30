@@ -184,10 +184,15 @@ pub(crate) fn window_closed(app: &tauri::AppHandle, label: &str) {
 }
 
 /// [`WindowHost::retitled`](shell_core::windows::WindowHost::retitled): `label`'s title or colour
-/// changed in place; repaint its banner.
+/// changed in place; carry it into `last_cfg` (so [`labelled_windows`] keeps the window before the
+/// reload echo) and repaint its banner.
 pub(crate) fn window_retitled(app: &tauri::AppHandle, label: &str, decl: &WindowDecl) {
-    app.state::<commands::AppState>()
-        .set_colour(label, decl.colour.clone());
+    let state = app.state::<commands::AppState>();
+    let set = app.state::<WindowSet>();
+    state.retitle_window(&decl.title, decl.colour.clone(), |t| {
+        set.label_for_title(t).is_some()
+    });
+    state.set_colour(label, decl.colour.clone());
     let _ = app.emit_to(label, "config-reloaded", ());
 }
 
@@ -201,22 +206,6 @@ pub(crate) fn sync_detached(app: &tauri::AppHandle) {
         .expect("detached lock")
         .len();
     app.state::<WindowSet>().set_detached_count(app, count);
-}
-
-/// Every window's `CloseRequested` (the native red button, ⌘⇧W, or the [`WindowSet`] closing it);
-/// the close always proceeds. A **user** close of the **last** window quits lector
-/// (last-window-quit), rather than leaving the home surface up. A close the set made (a delete, a
-/// reload removing the window) has already dropped the window from the set's open windows, so it
-/// never quits: the home surface takes over.
-pub(crate) fn on_real_window_close(app: &tauri::AppHandle, label: &str) {
-    let user_close = app
-        .state::<WindowSet>()
-        .entries()
-        .iter()
-        .any(|e| e.id == label && e.open);
-    if user_close && app.windows().len() <= 1 {
-        app.exit(0);
-    }
 }
 
 /// The `nav-tab` payload: step `dir` from `from`, a popped-out tab, or else from the highlight.
@@ -468,8 +457,12 @@ pub fn run() {
             app.state::<commands::AppState>().set_last_cfg(cfg.clone());
 
             // The window set opens the `open_on_start` windows, lists the rest, and shows the home
-            // surface whenever no window is open (a failed load, no `[[window]]`, all closed).
-            app.manage(WindowSet::new("lector", path.clone(), windows::LectorHost));
+            // surface whenever no window is open (a failed load, no `[[window]]`, all closed). The
+            // user closing the last window quits instead.
+            app.manage(
+                WindowSet::new("lector", path.clone(), windows::LectorHost)
+                    .quit_on_last_close(true),
+            );
             let set = app.state::<WindowSet>();
             match load_error {
                 None => set.materialize(app.handle(), windows::decls(&cfg)),
@@ -512,12 +505,7 @@ pub fn run() {
                     }
                     return;
                 }
-                if id == shell_core::menu::ids::NEW_WINDOW {
-                    windows::new_window(app);
-                    return;
-                }
-                if let Some(action) = windows::BannerAction::parse(id) {
-                    action.run(app);
+                if app.state::<WindowSet>().handle_menu(app, id) {
                     return;
                 }
                 if let Some(label) = shell_core::menu::selected_window(id) {

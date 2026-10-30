@@ -36,9 +36,9 @@
 //! serving anything else needs a per-caller gate (a curator-style `is_chrome_caller`).
 
 use crate::servers::Servers;
-use lector_config::identity::window_of;
 use lector_config::{Config, Density, TabDigitKeys, TabView, WindowConfig};
 use serde::{Deserialize, Serialize};
+use shell_core::window_of;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -192,7 +192,7 @@ impl AppState {
             .lock()
             .expect("views lock")
             .iter()
-            .filter(|v| window_of(&v.label) == window_id)
+            .filter(|v| window_of(&v.label) == Some(window_id))
             .cloned()
             .collect()
     }
@@ -200,7 +200,7 @@ impl AppState {
     pub fn set_active(&self, label: &str) {
         // The window label is the tab label's namespace (`{window}:{within}`), so active is
         // tracked per window without threading a window handle through every command.
-        let window = window_of(label).to_string();
+        let window = window_of(label).unwrap_or_default().to_string();
         self.active
             .lock()
             .expect("active lock")
@@ -245,7 +245,7 @@ impl AppState {
     /// Clear this window's active tab iff it currently points at `label`. No-op when a different
     /// tab (or none) is active — unloading a tab that isn't showing must not disturb the one that is.
     pub(crate) fn clear_active_if(&self, label: &str) {
-        let window = window_of(label);
+        let window = window_of(label).unwrap_or_default();
         let mut active = self.active.lock().expect("active lock");
         if active.get(window).map(String::as_str) == Some(label) {
             active.remove(window);
@@ -307,6 +307,39 @@ impl AppState {
 
     pub fn set_last_cfg(&self, cfg: Config) {
         *self.last_cfg.lock().expect("last_cfg lock") = cfg;
+    }
+
+    /// Carry a window's in-place title or colour change into the last clean load ahead of its
+    /// reload echo, so [`window_cfg`](Self::window_cfg) and the `WindowSet` label lookup see the
+    /// new title. A rename patches the one window whose title the set no longer lists (`listed`);
+    /// with several unlisted (another edit in flight) nothing is patched and the echo settles it.
+    pub fn retitle_window(
+        &self,
+        title: &str,
+        colour: Option<String>,
+        listed: impl Fn(&str) -> bool,
+    ) {
+        let mut cfg = self.last_cfg.lock().expect("last_cfg lock");
+        let idx = cfg
+            .windows
+            .iter()
+            .position(|w| w.title.trim() == title.trim())
+            .or_else(|| {
+                let mut unlisted = cfg
+                    .windows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, w)| !listed(&w.title))
+                    .map(|(i, _)| i);
+                match (unlisted.next(), unlisted.next()) {
+                    (Some(i), None) => Some(i),
+                    _ => None,
+                }
+            });
+        if let Some(w) = idx.map(|i| &mut cfg.windows[i]) {
+            w.title = title.to_string();
+            w.colour = colour;
+        }
     }
 
     /// The last cleanly loaded `[[window]]` titled `title` (trimmed).
@@ -412,7 +445,7 @@ pub fn unload_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, 
     if state.detached_tab_labels().contains(&label) {
         return;
     }
-    let window = window_of(&label).to_string();
+    let window = window_of(&label).unwrap_or_default().to_string();
     let was_active = state.active_for(&window).as_deref() == Some(label.as_str());
     // Tear down this tab: stop its server and clear active if it was showing (AppState::unload),
     // then destroy its content webview.
@@ -468,7 +501,7 @@ pub fn pop_out_tab(
     let view = state
         .view(&label)
         .ok_or_else(|| format!("no such tab: {label}"))?;
-    let window_id = window_of(&label).to_string();
+    let window_id = window_of(&label).unwrap_or_default().to_string();
 
     // Resolve the origin window's size/colour up front, before any teardown below, so a miss is
     // rejected before this call has any side effect to undo.
@@ -768,10 +801,9 @@ pub fn shell_home_open_window(id: String, app: tauri::AppHandle) {
 /// Window… and Delete Window… for the calling window. Its items arrive as menu events.
 #[tauri::command]
 pub fn window_menu(x: f64, y: f64, window: tauri::Window) -> Result<(), String> {
-    let menu = crate::windows::banner_menu(window.app_handle(), window.label())
-        .map_err(|e| e.to_string())?;
-    window
-        .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
+    let app = window.app_handle();
+    app.state::<shell_core::windows::WindowSet>()
+        .banner_menu(app, window.label(), x, y)
         .map_err(|e| e.to_string())
 }
 
@@ -1123,6 +1155,29 @@ mod tests {
             "a popped-out window resolves to the tab it hosts"
         );
         assert_eq!(state.shown_tab("w2"), None);
+    }
+
+    #[test]
+    fn rename_patches_last_cfg_title() {
+        let state = AppState::new();
+        let src = "[[window]]\ntitle = \"Docs\"\n[[window]]\ntitle = \"Side\"\ncolour = \"#abc\"\n";
+        state.set_last_cfg(lector_config::parse_and_validate(src).unwrap().0);
+        // The set renamed "Docs" to "Notes": "Docs" is no longer listed.
+        let listed = |t: &str| ["Notes", "Side"].contains(&t.trim());
+        state.retitle_window("Notes", None, listed);
+        assert!(state.window_cfg("Notes").is_some());
+        assert!(state.window_cfg("Docs").is_none());
+        // A colour change (or a reload's echo) patches the window by its own title.
+        state.retitle_window("Side", Some("#f00".into()), listed);
+        assert_eq!(
+            state.window_cfg("Side").unwrap().colour.as_deref(),
+            Some("#f00")
+        );
+        // Two unlisted windows (another edit in flight): which was renamed is unknown, so nothing
+        // is patched and the reload echo settles it.
+        state.retitle_window("Other", None, |t| t.trim() == "Other");
+        assert!(state.window_cfg("Other").is_none());
+        assert_eq!(state.last_cfg().windows.len(), 2);
     }
 
     fn view(label: &str) -> lector_config::TabView {

@@ -10,7 +10,6 @@ pub use config_core::{
 };
 
 pub mod hash;
-pub mod identity;
 
 use serde::{Deserialize, Serialize};
 
@@ -386,7 +385,7 @@ impl WindowTabs for WindowConfig {
             };
             *n += 1;
             views.push(TabView {
-                label: crate::identity::namespaced(wid, &within),
+                label: shell_core::child_label(wid, &within),
                 group,
                 title: tab.title.clone(),
                 dir: tab.dir.clone(),
@@ -411,7 +410,7 @@ impl WindowTabs for WindowConfig {
             // Compare namespaced labels, matching how `seen` was seeded from curated views (whose
             // labels already carry the `wid:` prefix) — comparing bare `base` against those would
             // never collide and defeat the dedup entirely.
-            let label = crate::identity::namespaced(window_label, &base);
+            let label = shell_core::child_label(window_label, &base);
             if !seen.insert(label.clone()) {
                 continue; // shadowed by a curated tab or an earlier root
             }

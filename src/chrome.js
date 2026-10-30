@@ -282,13 +282,13 @@ listen("config-error", (event) => {
 });
 
 // The menu spine's ⌘W (Tab ▸ Close Tab): unloads whichever tab is active in THIS window. lib.rs
-// routes it via emit_to_focused_chrome; the webview-scoped `listen` above is what makes that
-// targeting actually bind (see the footgun).
+// routes it via on_spine_action; the webview-scoped `listen` above is what makes that targeting
+// actually bind (see the footgun).
 listen("close-tab", () => {
   if (activeLabel) unloadTab(activeLabel);
 });
 // The menu spine's ⌘⇧O (Tab ▸ Pop Out Tab): pop THIS window's active tab out into its own window.
-// lib.rs routes it via emit_to_focused_chrome, so only the focused window's chrome receives it.
+// lib.rs routes it via on_spine_action to the window `menu::route` picks.
 listen("pop-out-tab", () => {
   if (activeLabel) popOutTab(activeLabel);
 });

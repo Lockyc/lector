@@ -169,7 +169,7 @@ own serde impl), not a silent fallback. **Tab ▸ Cycle Tabs with ⌘1/⌘2** wr
 ## Tab pop-out: detach a tab into its own window
 
 A ⤢ control on each sidebar row (chrome-core's `onPopOut`) and **Pop Out Tab (⌘⇧O)** (the shared
-menu spine, spliced into lector's own Tab submenu — see above) pop the origin window's active tab
+Tab submenu — see above) pop the origin window's active tab
 into its own **banner-only detached window** (`shell-core`'s shared detach shell,
 `shell_core::detach::open_detached`). Closing that window returns the tab to its origin — reopening
 the origin first if the user closed it while the tab was out.

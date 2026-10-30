@@ -158,19 +158,23 @@ pub(crate) fn open_window(
         slot.decl.width,
         slot.decl.height,
     )?;
-    app.state::<commands::AppState>()
-        .set_colour(&slot.label, slot.decl.colour.clone());
+    let state = app.state::<commands::AppState>();
+    state.set_colour(&slot.label, slot.decl.colour.clone());
+    state.popped_out_of(&slot.label, &slot.decl.title);
     Ok(window)
 }
 
 /// [`WindowHost::closed`](shell_core::windows::WindowHost::closed). A window the user closed keeps
 /// its servers and active mark for a reopen; one gone from the config takes its popped-out tabs
 /// with it (their servers stop at the next [`reload::reconcile`], which no longer sees them).
-pub(crate) fn window_closed(app: &tauri::AppHandle, label: &str) {
+pub(crate) fn window_closed(app: &tauri::AppHandle) {
     let set = app.state::<WindowSet>();
-    if !set.entries().iter().any(|e| e.id == label) {
-        let state = app.state::<commands::AppState>();
-        for detached in state.take_detached_from(&HashSet::from([label.to_string()])) {
+    // By title: a window renamed in place and closed is no longer listed under `label`.
+    let orphans = app
+        .state::<commands::AppState>()
+        .take_orphaned_detached(&set.entries());
+    if !orphans.is_empty() {
+        for detached in orphans {
             if let Some(w) = app.get_window(&detached) {
                 let _ = w.destroy();
             }
@@ -185,10 +189,21 @@ pub(crate) fn window_closed(app: &tauri::AppHandle, label: &str) {
 
 /// [`WindowHost::retitled`](shell_core::windows::WindowHost::retitled): `label`'s title or colour
 /// changed in place; carry it into `last_cfg` (so [`labelled_windows`] keeps the window before the
-/// reload echo) and repaint its banner.
+/// reload echo) and into the origin titles of the tabs popped out of it, and repaint its banner.
 pub(crate) fn window_retitled(app: &tauri::AppHandle, label: &str, decl: &WindowDecl) {
     let state = app.state::<commands::AppState>();
     let set = app.state::<WindowSet>();
+    // The set's entries and `last_cfg` list the same windows in the same order; `label` is the
+    // pre-rename one, which a closed window has already lost.
+    let title = decl.title.trim();
+    let old = set
+        .entries()
+        .iter()
+        .position(|e| e.title.trim() == title)
+        .and_then(|i| state.last_cfg().windows.get(i).map(|w| w.title.clone()));
+    if let Some(old) = old {
+        state.retitle_origins(&old, title);
+    }
     state.retitle_window(&decl.title, decl.colour.clone(), |t| {
         set.label_for_title(t).is_some()
     });
@@ -311,7 +326,10 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
     }
     let state = app.state::<commands::AppState>();
 
-    // Peek the origin + tab + port without removing (see the doc comment's ordering rationale).
+    // Find the origin by title and point the bookkeeping (and the tab's server) at its current
+    // label, then peek the origin + tab + port without removing (see the doc comment's ordering
+    // rationale). With no origin left in the config, the tab ends below like a removed one.
+    let home = state.resolve_origin(detached_label, &app.state::<WindowSet>().entries());
     let Some((origin_wid, tab_label, port)) = state
         .detached
         .lock()
@@ -323,7 +341,7 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
     };
 
     // Reopen the origin if the user closed it while the tab was popped out.
-    if app.get_window(&origin_wid).is_none() {
+    if matches!(home, Some((_, false))) {
         open_or_focus_window(app, &origin_wid);
     }
 
@@ -340,12 +358,17 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
     }
     sync_detached(app);
 
-    if state.view(&tab_label).is_none() {
+    let view = state.view(&tab_label);
+    if home.is_none() || view.is_none() {
         // The tab (or its whole window) was removed from the config while it was popped out — it
         // simply ends rather than coming back. The server it was keeping alive is no longer wanted
         // by anything: stop it explicitly (rather than leaving it to be swept up only at quit) so a
-        // config edit doesn't leak a serve loop + watcher for the rest of the session.
-        state.servers.stop(&tab_label);
+        // config edit doesn't leak a serve loop + watcher for the rest of the session. A view
+        // still under its label belongs to a window that took the origin's freed label, and keeps
+        // the server.
+        if view.is_none() {
+            state.servers.stop(&tab_label);
+        }
         return;
     }
 
@@ -523,9 +546,10 @@ pub fn run() {
                     return;
                 };
                 let origin_of = |l: &str| {
-                    let state = app.state::<commands::AppState>();
-                    let detached = state.detached.lock().expect("detached lock");
-                    detached.get(l).map(|d| d.origin_wid.clone())
+                    let entries = app.state::<WindowSet>().entries();
+                    app.state::<commands::AppState>()
+                        .resolve_origin(l, &entries)
+                        .map(|(wid, _)| wid)
                 };
                 if let Some(routed) = shell_core::menu::route(id, focused.label(), origin_of) {
                     on_spine_action(app, routed);

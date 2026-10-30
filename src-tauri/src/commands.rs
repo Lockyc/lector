@@ -156,7 +156,7 @@ pub struct AppState {
     /// Whole-app `auto_update` from the config, set on every clean load.
     auto_update: AtomicBool,
     /// Whole-app `tab_digit_keys`, set on every clean load; the menu bar is rebuilt from it when a
-    /// window opens or closes, and the Cycle Tabs toggle writes its flip.
+    /// window opens or closes.
     tab_digit_keys: Mutex<TabDigitKeys>,
     /// Every configured window's fixed identity (see [`WindowMeta`]), for the menu spine's Window
     /// submenu and reopening a closed window from it. Grows as `lib.rs` builds windows (at launch,
@@ -731,18 +731,19 @@ pub fn set_hole_rect(rect: RectArg, window: tauri::Window) -> Result<(), String>
     Ok(())
 }
 
+/// Flips `tab_digit_keys` in the file (the Tab menu's Cycle Tabs toggle), seeding the starter
+/// config first when there is none. The watcher's reload then applies it.
+pub fn toggle_tab_digit_keys(path: &std::path::Path) -> Result<(), String> {
+    lector_config::write_default_config(path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;
+    lector_config::toggle_tab_digit_keys(path)
+        .map(|_| ())
+        .map_err(|e| format!("config: {e}"))
+}
+
 /// The home surface's "Create a starter config" button. This is where config-core is called (via
 /// `lector_config`'s re-export — this crate never pins config-core directly, the same one-source
 /// rule as its other re-exported house helpers) — shell-core owns the surface but never touches
 /// config-core (the cores stay independent).
-/// Saves `tab_digit_keys` (the Tab menu's Cycle Tabs toggle), seeding the starter config first
-/// when there is no file. The watcher's reload then applies it.
-pub fn write_tab_digit_keys(path: &std::path::Path, mode: TabDigitKeys) -> Result<(), String> {
-    lector_config::write_default_config(path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;
-    lector_config::set_key(path, "tab_digit_keys", mode.as_str().into())
-        .map_err(|e| format!("config: {e}"))
-}
-
 #[tauri::command]
 pub fn shell_home_create_config(app: tauri::AppHandle) -> Result<(), String> {
     let path = lector_config::resolve_config_path();
@@ -795,11 +796,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn writing_the_digit_mode_seeds_a_missing_config_first() {
+    fn toggling_the_digit_mode_seeds_a_missing_config_first() {
         let dir = std::env::temp_dir().join(format!("lector-digit-{}", std::process::id()));
         let path = dir.join("config.toml");
         let _ = std::fs::remove_dir_all(&dir);
-        write_tab_digit_keys(&path, TabDigitKeys::Cycle).unwrap();
+        toggle_tab_digit_keys(&path).unwrap();
         let src = std::fs::read_to_string(&path).unwrap();
         // The starter's documentation survives; only the value changed.
         assert!(
@@ -808,7 +809,7 @@ mod tests {
         );
         let (cfg, _) = lector_config::parse_and_validate(&src).unwrap();
         assert!(cfg.tab_digit_keys.is_cycle());
-        write_tab_digit_keys(&path, TabDigitKeys::Jump).unwrap();
+        toggle_tab_digit_keys(&path).unwrap();
         let (cfg, _) = lector_config::load_config(&path).unwrap();
         assert!(!cfg.tab_digit_keys.is_cycle());
         let _ = std::fs::remove_dir_all(&dir);

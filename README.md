@@ -72,8 +72,9 @@ sidebar shows an *Update available* bar with a one-click **Update & Relaunch**.
   tab to where it came from.
 - **Windows and the home surface** — **⌘⇧W** closes a window and the **Window** menu reopens it;
   a closed window stays closed when the config reloads. **Window ▸ New Window…** adds one, and
-  right-clicking a window's name banner edits its title and colour or deletes it. With no window open, lector shows a home surface listing every window; with no config, it
-  offers a **Create a starter config** button. The **Config** menu opens the config file or
+  right-clicking a window's name banner edits its title and colour or deletes it. With no window
+  open, lector shows a home surface listing every window; with no config, it offers a
+  **Create a starter config** button. The **Config** menu opens the config file or
   reveals it in Finder.
 - **Native navigation.** Mouse side-buttons drive back/forward through a tab's history, and a
   determinate progress bar tracks page loading — both alongside the sidebar's ◀ ▶ ⌂ nav pill.

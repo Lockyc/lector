@@ -135,7 +135,8 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
   Reset All Tabs / Open Developer Tools; warden's has Reopen Last Closed — none of *those* map onto
   lector: **compositor's file watcher already live-reloads every open tab on save**, so a manual
   "Reload Tab" item would be a no-op button; there is no per-tab "session" to reset (a compositor
-  `SiteServer` has no state beyond the served files); and DevTools is one keystroke away regardless.
+  `SiteServer` has no state beyond the served files); and a release build has no inspector to open
+(tauri's `devtools` feature is off — a debug build's right-click Inspect Element is the route).
   Other tab-scoped actions (reveal-in-Finder, copy the served URL, open the repo dir) are open
   roadmap, not excluded — the submenu is just empty of them for now.
 - **The whole menu is built by one function, `install_app_menu` (`lib.rs`), called at setup AND

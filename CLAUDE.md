@@ -162,7 +162,8 @@ launcher to delete, so it's the cleanest case of the three apps consuming these.
 `jump` — ⌘1–⌘9 jump straight to a tab position; `cycle` makes ⌘1 next tab / ⌘2 previous and
 shifts the jump items to ⌘3–⌘9. An unrecognised token is a load error (`config_core::TabDigitKeys`'s
 own serde impl), not a silent fallback. **Tab ▸ Cycle Tabs with ⌘1/⌘2** writes the flip
-(`commands::write_tab_digit_keys`, seeding the starter config first); the watcher's reload applies it.
+(`commands::toggle_tab_digit_keys`, flipping what the file says and seeding the starter config
+first); the watcher's reload applies it.
 
 - **The menu handler is mode-blind.** `shell_core::menu::route` resolves a fired id to a
   `SpineAction` and the window it acts on (from a popped-out window: its origin) — the cycle aliases

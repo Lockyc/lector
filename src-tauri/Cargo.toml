@@ -19,7 +19,7 @@ tauri-build = { version = "2", features = [] }
 chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "8e27367319ba2b3a4ded492a6fa00d2632c3ffd8" }
 # Zero-dep by default — build_stamp() + materialize_scripts() are all build.rs needs.
 # `default-features = false` is LOAD-BEARING: without it this build-dep drags in the whole tauri tree.
-shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "147435dcbb9c6144442cd9d23f74561087792f46", default-features = false }
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "879280b162bf437163fae13d8b31736b45f29fff", default-features = false }
 
 [dependencies]
 lector-config = { path = "../crates/lector-config" }
@@ -32,7 +32,7 @@ anyhow = "1"
 # The render engine. One serve loop per live tab; lector never renders anything itself.
 compositor = { git = "https://github.com/Lockyc/compositor", rev = "93e2d4bbe1189c8479dd4d80263dcfc2e54489aa" }
 # The Tauri runtime sliver: register_plugins (window geometry, updater, process).
-shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "147435dcbb9c6144442cd9d23f74561087792f46", features = ["runtime"] }
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "879280b162bf437163fae13d8b31736b45f29fff", features = ["runtime"] }
 # Unused directly in this crate's code — registration flows through shell_core::register_plugins,
 # not this dependency. They exist ONLY so tauri-build's ACL/permission-schema discovery (which walks
 # a crate's *direct* dependencies for tauri-plugin-* crates) can see the plugin and let

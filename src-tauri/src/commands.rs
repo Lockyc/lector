@@ -40,6 +40,7 @@ use lector_config::{Config, Density, TabDigitKeys, TabView, WindowConfig};
 use serde::{Deserialize, Serialize};
 use shell_core::menu::WindowEntry;
 use shell_core::window_of;
+use shell_core::windows::plan::entry_for_title;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -127,11 +128,7 @@ impl LectorDetached {
         if self.origin_wid == wid {
             return None;
         }
-        let within = self
-            .tab_label
-            .rsplit_once(':')
-            .map_or(self.tab_label.as_str(), |(_, w)| w);
-        let new = shell_core::label::child_label(wid, within);
+        let new = shell_core::label::rehome(&self.tab_label, wid);
         self.origin_wid = wid.to_string();
         Some(std::mem::replace(&mut self.tab_label, new))
     }
@@ -334,17 +331,12 @@ impl AppState {
         *self.last_cfg.lock().expect("last_cfg lock") = cfg;
     }
 
-    /// Carry a window's in-place title or colour change into the last clean load ahead of its
-    /// reload echo, so [`window_cfg`](Self::window_cfg) and the `WindowSet` label lookup see the
-    /// new title (`lector_config::retitle_window`; `listed` = the set still lists the title).
-    pub fn retitle_window(
-        &self,
-        title: &str,
-        colour: Option<String>,
-        listed: impl Fn(&str) -> bool,
-    ) {
+    /// Carry a window's in-place change from `old` to `title` and `colour` into the last clean load
+    /// ahead of its reload echo, so [`window_cfg`](Self::window_cfg) and the `WindowSet` label
+    /// lookup see the new title (`lector_config::retitle_window`).
+    pub fn retitle_window(&self, old: &str, title: &str, colour: Option<String>) {
         let mut cfg = self.last_cfg.lock().expect("last_cfg lock");
-        lector_config::retitle_window(&mut cfg.windows, title, colour, listed);
+        lector_config::retitle_window(&mut cfg.windows, old, title, colour);
     }
 
     /// The last cleanly loaded `[[window]]` titled `title` (trimmed).
@@ -371,21 +363,27 @@ impl AppState {
     }
 
     /// Remove and return the detached-window labels of every tab whose origin no window in
-    /// `entries` (the `WindowSet`'s) is titled — its window left the config. Taken before those
-    /// detached windows are destroyed, so `redock` finds nothing to return to a window that no
-    /// longer exists, and the next `reload::reconcile`'s `retain` stops the tabs' servers like any
-    /// other removed tab's.
-    pub fn take_orphaned_detached(&self, entries: &[WindowEntry]) -> Vec<String> {
+    /// `entries` (the `WindowSet`'s) is titled — its window left the config — and rehome every
+    /// other tab (and its server) onto the label its origin resolves to now, so none keeps a label
+    /// a closed window freed. The orphans are taken before their detached windows are destroyed,
+    /// so `redock` finds nothing to return to a window that no longer exists, and the next
+    /// `reload::reconcile`'s `retain` stops the tabs' servers like any other removed tab's.
+    pub fn settle_detached(&self, entries: &[WindowEntry]) -> Vec<String> {
         let mut detached = self.detached.lock().expect("detached lock");
-        let labels: Vec<String> = detached
-            .iter()
-            .filter(|(_, d)| origin_home(&d.origin_title, entries).is_none())
-            .map(|(label, _)| label.clone())
-            .collect();
-        for label in &labels {
-            detached.remove(label);
-        }
-        labels
+        let mut orphans = Vec::new();
+        detached.retain(|label, d| match entry_for_title(entries, &d.origin_title) {
+            Some(home) => {
+                if let Some(old) = d.rehome(&home.id) {
+                    self.servers.rekey(&old, &d.tab_label);
+                }
+                true
+            }
+            None => {
+                orphans.push(label.clone());
+                false
+            }
+        });
+        orphans
     }
 
     /// The tabs popped out of the window `wid` titled `title`, which is being built: matched by
@@ -413,11 +411,11 @@ impl AppState {
     ) -> Option<(String, bool)> {
         let mut detached = self.detached.lock().expect("detached lock");
         let d = detached.get_mut(detached_label)?;
-        let home = origin_home(&d.origin_title, entries)?;
-        if let Some(old) = d.rehome(&home.0) {
+        let home = entry_for_title(entries, &d.origin_title)?;
+        if let Some(old) = d.rehome(&home.id) {
             self.servers.rekey(&old, &d.tab_label);
         }
-        Some(home)
+        Some((home.id.clone(), home.open))
     }
 
     /// Carry a window's in-place rename from `old` to `new` into the popped-out tabs' origin titles.
@@ -430,14 +428,6 @@ impl AppState {
             d.origin_title = new.trim().to_string();
         }
     }
-}
-
-/// The configured window titled `origin_title`: its current label and whether it is open.
-fn origin_home(origin_title: &str, entries: &[WindowEntry]) -> Option<(String, bool)> {
-    entries
-        .iter()
-        .find(|e| e.title.trim() == origin_title.trim())
-        .map(|e| (e.id.clone(), e.open))
 }
 
 impl Default for AppState {
@@ -915,7 +905,7 @@ mod tests {
         let state = out_of_renamed();
         let entries = [entry("job", "job", false)];
         // Closing it is not removing it: its popped-out tab stays out.
-        assert!(state.take_orphaned_detached(&entries).is_empty());
+        assert!(state.settle_detached(&entries).is_empty());
         assert_eq!(
             state.resolve_origin("shell-detach:work:tab-x", &entries),
             Some(("job".to_string(), false))
@@ -954,7 +944,7 @@ mod tests {
         );
         // With no window titled "job", the origin left the config.
         assert_eq!(
-            state.take_orphaned_detached(&entries),
+            state.settle_detached(&entries),
             vec!["shell-detach:work:tab-x".to_string()]
         );
     }
@@ -1317,20 +1307,18 @@ mod tests {
         let state = AppState::new();
         let src = "[[window]]\ntitle = \"Docs\"\n[[window]]\ntitle = \"Side\"\ncolour = \"#abc\"\n";
         state.set_last_cfg(lector_config::parse_and_validate(src).unwrap().0);
-        // The set renamed "Docs" to "Notes": "Docs" is no longer listed.
-        let listed = |t: &str| ["Notes", "Side"].contains(&t.trim());
-        state.retitle_window("Notes", None, listed);
+        // The set renamed "Docs" to "Notes".
+        state.retitle_window("Docs", "Notes", None);
         assert!(state.window_cfg("Notes").is_some());
         assert!(state.window_cfg("Docs").is_none());
-        // A colour change (or a reload's echo) patches the window by its own title.
-        state.retitle_window("Side", Some("#f00".into()), listed);
+        // A colour change patches the window by its own title.
+        state.retitle_window("Side", "Side", Some("#f00".into()));
         assert_eq!(
             state.window_cfg("Side").unwrap().colour.as_deref(),
             Some("#f00")
         );
-        // Two unlisted windows (another edit in flight): which was renamed is unknown, so nothing
-        // is patched and the reload echo settles it.
-        state.retitle_window("Other", None, |t| t.trim() == "Other");
+        // Neither title listed: nothing is patched.
+        state.retitle_window("Gone", "Other", None);
         assert!(state.window_cfg("Other").is_none());
         assert_eq!(state.last_cfg().windows.len(), 2);
     }

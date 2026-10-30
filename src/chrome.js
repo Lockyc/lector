@@ -311,6 +311,11 @@ listen("nav-tab", (e) => {
 listen("jump-tab", (e) => {
   if (sb) sb.selectByIndex(e.payload);
 });
+// The pointer moved onto a content webview (shell-core's web::pointer): this page never sees its
+// own exit, since the content composites above it, so chrome-core's `:hover` would freeze.
+listen("pointer-away", () => {
+  if (sb) sb.pointerAway();
+});
 
 // Menu "Check for Updates…" → chrome-core checks now + announces (up-to-date / error / a banner).
 // lib.rs emits this; without the forward the menu item did nothing.

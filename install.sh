@@ -71,11 +71,13 @@ echo "→ building release bundle (this takes a few minutes)"
 #    bundle lands under the workspace-root target/, not src-tauri/target/.
 bash scripts/install-app.sh "target/release/bundle/macos/lector.app"
 
-# 6. Seed the user config from the example (never overwrite an existing one).
+# 6. Seed the user config from the app's own starter (never overwrite an existing one).
+#    Not examples/config.toml: that is the `just run` fixture, whose `dir = "."` is only
+#    right with the repo as cwd — a Dock launch would render `/`.
 mkdir -p "$HOME/.config/lector"
 if [ ! -f "$HOME/.config/lector/config.toml" ]; then
-  cp examples/config.toml "$HOME/.config/lector/config.toml"
-  echo "→ seeded ~/.config/lector/config.toml from the example"
+  cp src/default-config.toml "$HOME/.config/lector/config.toml"
+  echo "→ seeded ~/.config/lector/config.toml from the starter config"
 else
   echo "→ ~/.config/lector/config.toml already exists — left untouched"
 fi

@@ -244,8 +244,7 @@ async function mountChrome() {
   }
 }
 
-// Sidebar width bounds passed to chrome-core (the single clamp) — curator's values, carried over
-// per this file's header note on the maxFraction gotcha.
+// Sidebar width bounds passed to chrome-core (the single clamp) — curator's values.
 const MIN_W = 160, MAX_W = 520, MAX_FRACTION = 0.4;
 
 function setSidebarWidth(w) {

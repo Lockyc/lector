@@ -130,7 +130,9 @@ fn show_first_tab(app: &tauri::AppHandle, label: &str) {
             .into_iter()
             .find(|e| e.id == label)?
             .title;
-        state.window_cfg(&title)?.startup_label(label)
+        state
+            .window_cfg(&title)?
+            .startup_label(&state.views_for_window(label))
     };
     let Some(tab) = state
         .active_for(label)
@@ -285,6 +287,10 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
 /// The menu spine's Window submenu selector, and the home surface's per-window button
 /// (`shell_home_open_window`): focus `label`'s window, or reopen it. A reopened window can sit on a
 /// new label (renamed while open), so its tabs are resolved again before its first tab shows.
+///
+/// A reopen re-scans every root and may start servers (hundreds of ms), so the menu and home
+/// callers run this off the main thread; `redock` calls it inline because it needs the reopen
+/// finished before it drops the detached bookkeeping.
 fn open_or_focus_window(app: &tauri::AppHandle, label: &str) {
     let was_open = app.get_window(label).is_some();
     app.state::<WindowSet>().open_or_focus(app, label);
@@ -500,7 +506,17 @@ pub fn run() {
                 let label = mouse_nav_handle
                     .state::<commands::AppState>()
                     .shown_tab(win.label())?;
-                win.get_webview(&label)
+                win.get_webview(&label).or_else(|| {
+                    // A pop-out's content webview keeps the label it was built with, while
+                    // `rehome` may rewrite its bookkeeping `tab_label`: fall back to the window's
+                    // one content webview.
+                    let mut content = win
+                        .webviews()
+                        .into_iter()
+                        .filter(|w| w.label() != win.label());
+                    let only = content.next()?;
+                    content.next().is_none().then_some(only)
+                })
             });
 
             for label in open_labels(app.handle()) {
@@ -528,7 +544,10 @@ pub fn run() {
                     return;
                 }
                 if let Some(label) = shell_core::menu::selected_window(id) {
-                    open_or_focus_window(app, label);
+                    let (app, label) = (app.clone(), label.to_string());
+                    tauri::async_runtime::spawn_blocking(move || {
+                        open_or_focus_window(&app, &label)
+                    });
                     return;
                 }
                 let Some(focused) = app.get_focused_window() else {

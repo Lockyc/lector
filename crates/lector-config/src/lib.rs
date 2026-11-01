@@ -351,10 +351,11 @@ pub trait WindowTabs {
     /// `parse_and_validate` already rejected any invalid root; a stray invalid one is silently
     /// skipped rather than panicking a live reconcile.
     fn resolved_roots(&self) -> Vec<config_core::RootDir>;
-    /// Label of the tab to make active on launch. `false`/unset: the first `load_on_open` (loaded)
-    /// tab, else `None` (blank) — the first tab isn't always loaded, so it isn't forced. `true`:
-    /// the first tab even if cold.
-    fn startup_label(&self, window_label: &str) -> Option<String>;
+    /// Label of the tab to make active on launch, from `views` — this window's resolved tabs,
+    /// discovered ones included (`tab_views_with_discovered`), so a root-only window still has a
+    /// first tab. `false`/unset: the first `load_on_open` (loaded) tab, else `None` (blank) — the
+    /// first tab isn't always loaded, so it isn't forced. `true`: the first tab even if cold.
+    fn startup_label(&self, views: &[TabView]) -> Option<String>;
 }
 
 impl WindowTabs for WindowConfig {
@@ -440,8 +441,7 @@ impl WindowTabs for WindowConfig {
             .collect()
     }
 
-    fn startup_label(&self, window_label: &str) -> Option<String> {
-        let views = self.tab_views(window_label);
+    fn startup_label(&self, views: &[TabView]) -> Option<String> {
         if self.extra.open_on_launch {
             views.first().map(|v| v.label.clone())
         } else {
@@ -793,7 +793,8 @@ title = "Docs"
             .find(|v| v.title == "compositor")
             .unwrap()
             .label;
-        assert_eq!(default.windows[0].startup_label("W"), Some(loaded));
+        let w = &default.windows[0];
+        assert_eq!(w.startup_label(&w.tab_views("W")), Some(loaded));
 
         // `open_on_launch = true` forces the first tab even though it's cold (homelab).
         let src = VALID.replace(
@@ -801,10 +802,22 @@ title = "Docs"
             "title = \"Docs\"\nopen_on_launch = true",
         );
         let forced = parse_and_validate(&src).unwrap().0;
-        assert_eq!(
-            forced.windows[0].startup_label("W"),
-            Some(forced.windows[0].tab_views("W")[0].label.clone())
-        );
+        let w = &forced.windows[0];
+        let views = w.tab_views("W");
+        assert_eq!(w.startup_label(&views), Some(views[0].label.clone()));
+
+        // A root-only window: its first tab is a discovered one.
+        let root_only = parse_and_validate("[[window]]\ntitle = \"R\"\nopen_on_launch = true\n")
+            .unwrap()
+            .0;
+        let found = config_core::DiscoveredProject {
+            path: "/tmp/repo".into(),
+            tree_path: vec![],
+            section: "repos".into(),
+        };
+        let w = &root_only.windows[0];
+        let views = w.tab_views_with_discovered("R", &[found]);
+        assert_eq!(w.startup_label(&views), Some(views[0].label.clone()));
 
         // No loaded tab anywhere → blank background, nothing forced.
         let none = parse_and_validate(
@@ -812,7 +825,8 @@ title = "Docs"
         )
         .unwrap()
         .0;
-        assert_eq!(none.windows[0].startup_label("W"), None);
+        let w = &none.windows[0];
+        assert_eq!(w.startup_label(&w.tab_views("W")), None);
     }
 
     #[test]

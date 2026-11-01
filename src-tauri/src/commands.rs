@@ -152,6 +152,10 @@ pub struct AppState {
     /// The active tab per window label. Chrome-owned selection: lector's Rust side decides, and the
     /// DTO's `active` field tells chrome-core to honour it rather than auto-firing onSelect.
     active: Mutex<HashMap<String, String>>,
+    /// The latest tab `select` was asked to show, per window. `select` runs off the main thread, so
+    /// a slow cold start can finish after a later, warm one; it checks this before showing and
+    /// yields to the newer request instead of overriding the user's last click.
+    requested: Mutex<HashMap<String, String>>,
     /// Per-window accent colour (window id → the window's optional hex colour), set when the window
     /// is built.
     colours: Mutex<HashMap<String, Option<String>>>,
@@ -184,6 +188,7 @@ impl AppState {
             servers: Servers::new(),
             views: Mutex::new(Vec::new()),
             active: Mutex::new(HashMap::new()),
+            requested: Mutex::new(HashMap::new()),
             colours: Mutex::new(HashMap::new()),
             density: Mutex::new(Density::default()),
             sidebar_drag: AtomicBool::new(true),
@@ -227,6 +232,25 @@ impl AppState {
             .lock()
             .expect("active lock")
             .insert(window, label.to_string());
+    }
+
+    /// Record `label` as its window's latest requested selection (see `requested`).
+    fn request(&self, label: &str) {
+        let window = window_of(label).unwrap_or_default().to_string();
+        self.requested
+            .lock()
+            .expect("requested lock")
+            .insert(window, label.to_string());
+    }
+
+    /// Whether `label` is still its window's latest requested selection.
+    fn still_requested(&self, label: &str) -> bool {
+        let window = window_of(label).unwrap_or_default();
+        self.requested
+            .lock()
+            .expect("requested lock")
+            .get(window)
+            .is_none_or(|l| l == label)
     }
 
     pub fn active_for(&self, window_id: &str) -> Option<String> {
@@ -445,7 +469,13 @@ pub fn select(app: &tauri::AppHandle, state: &AppState, label: &str) -> Result<(
         .view(label)
         .ok_or_else(|| format!("no such tab: {label}"))?;
     let dir = lector_config::expand_tilde(&view.dir);
+    state.request(label);
     let port = state.servers.start(label, &dir)?;
+    // A newer selection for this window landed while this one started: it wins. The server
+    // stays warm, so nothing is lost.
+    if !state.still_requested(label) {
+        return Ok(());
+    }
     crate::webviews::show(app, label, port)?;
     state.set_active(label);
     Ok(())
@@ -840,8 +870,9 @@ pub fn shell_home_edit_config() {
 }
 
 /// The home surface's per-window button (shown for the `Windows` list state): open, or focus if
-/// already open. Same path the menu spine's Window submenu uses for the same id.
-#[tauri::command]
+/// already open. Same path the menu spine's Window submenu uses for the same id. `async`: a reopen
+/// re-scans roots and starts servers (see `open_or_focus_window`).
+#[tauri::command(async)]
 pub fn shell_home_open_window(id: String, app: tauri::AppHandle) {
     crate::open_or_focus_window(&app, &id);
 }
@@ -881,6 +912,20 @@ mod tests {
             open,
             colour: None,
         }
+    }
+
+    #[test]
+    fn a_later_selection_in_the_same_window_supersedes_an_earlier_one() {
+        let state = AppState::new();
+        state.request("w:a");
+        state.request("w:b");
+        state.request("v:c");
+        assert!(!state.still_requested("w:a"), "w:b came after");
+        assert!(state.still_requested("w:b"));
+        assert!(
+            state.still_requested("v:c"),
+            "another window's request is independent"
+        );
     }
 
     /// A tab popped out of the window first labelled "work", since renamed in place to "job"; its

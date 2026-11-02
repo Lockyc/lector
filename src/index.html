@@ -18,8 +18,8 @@
            sidebar BODY drag is stamped by chrome-core per the windowDrag DTO flag. -->
       <aside id="sidebar" data-tauri-drag-region></aside>
       <div id="content-hole" data-tauri-drag-region>
-        <!-- Muted lector mark (open book — lector renders local documentation) — shown by the
-             controller when no tab is selected. Composited BEHIND the content webviews (a live tab
+        <!-- Muted lector mark (open book — lector renders local documentation) — chrome-core's
+             `emptyState`, shown while no tab is active. Composited BEHIND the content webviews (a live tab
              occludes it). Opaque. This is a placeholder pending real brand art (see docs/FOLLOWUPS).
              Deliberately NOT curator's tabs-and-page mark, which lector was scaffolded from. -->
         <div id="empty-state">

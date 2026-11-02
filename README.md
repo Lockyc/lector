@@ -77,7 +77,7 @@ sidebar shows an *Update available* bar with a one-click **Update & Relaunch**.
   **Create a starter config** button. The **Config** menu opens the config file or
   reveals it in Finder.
 - **Native navigation.** Mouse side-buttons drive back/forward through a tab's history, and a
-  determinate progress bar tracks page loading — both alongside the sidebar's ◀ ▶ ⌂ nav pill.
+  determinate progress bar tracks page loading — both alongside the sidebar header's ◀ ▶ ⌂ buttons.
 - **Keyboard tab navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle to the previous/next
   tab and **⌘1–⌘9** jump to a position; **Tab ▸ Cycle Tabs with ⌘1/⌘2** (or `tab_digit_keys =
   "cycle"`) makes **⌘1** / **⌘2** cycle instead (jumps shift to **⌘3–⌘9**).

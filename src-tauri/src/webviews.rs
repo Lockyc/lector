@@ -283,7 +283,7 @@ pub fn navigate(app: &AppHandle, label: &str, url: &str) -> Result<(), String> {
     wv.navigate(url).map_err(|e| e.to_string())
 }
 
-/// Evaluate `script` in `label`'s content webview (the nav pill's back/forward — `commands.rs`'s
+/// Evaluate `script` in `label`'s content webview (the header nav's back/forward — `commands.rs`'s
 /// `nav_back`/`nav_forward`). No-op if the webview hasn't been created yet, same as [`navigate`].
 pub fn eval_on(app: &AppHandle, label: &str, script: &str) -> Result<(), String> {
     let window_id = window_of(label).unwrap_or_default();

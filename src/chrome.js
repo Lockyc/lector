@@ -175,12 +175,15 @@ async function mountChrome() {
         setSidebarWidth(width);
         reportRect();
       },
+      // Collapse and peek move the hole; a peek only by a transform, which the ResizeObserver misses.
+      onLayout: reportRect,
       // onSuspend/onDestroy: omitted — lector sets neither killable nor suspendable, so no row arms.
     },
     {
       nav: ["back", "forward", "home"],
       appName: "lector",
       emptyState: document.getElementById("empty-state"),
+      hole: document.getElementById("content-hole"),
       storageKey: "lector:sidebar-width:" + title,
       defaultWidth,
       minWidth: MIN_W,
@@ -261,6 +264,9 @@ listen("pop-out-tab", () => {
 // ⌘⇧F (shell-core's Find in Sidebar): lib.rs has already made this webview the key view.
 listen("find-in-sidebar", () => {
   if (sb) sb.focusSearch();
+});
+listen("toggle-sidebar", () => {
+  if (sb) sb.toggleSidebar();
 });
 
 // Keyboard tab navigation (Tab menu): ⌘⇧[ / ⌘⇧] cycle, ⌘1–9 jump to a position — and, under

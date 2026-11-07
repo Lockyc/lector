@@ -67,9 +67,10 @@ sidebar shows an *Update available* bar with a one-click **Update & Relaunch**.
 - **Sidebar search** — the field above the tab list narrows it as you type, matching tab titles,
   folder paths and group names. **⌘⇧F** jumps into it; **↑**/**↓** pick a match, **Enter** opens
   it, **Esc** clears the search.
-- **Collapse the sidebar** — the button beside the traffic lights (or **⌃⌘S**) hides it, leaving
-  a thin strip with the tab's title. Rest the pointer on the window's left edge to slide it in;
-  moving onto the page hides it again. Each window remembers its own choice.
+- **Collapse the sidebar** — the button beside the traffic lights (or **Tab ▸ Toggle Sidebar**,
+  **⌃⌘S**) hides it, leaving a thin strip with the tab's title. Rest the pointer on the window's
+  left edge to slide it in; moving onto the page hides it again. While it's collapsed, a dot on the
+  toggle stands in for the hidden update and error bars. Each window remembers its own choice.
 - **Pop-out tabs** — **⌘⇧O** (or the pop-out icon on a row's letter tile) moves the active tab
   into its own window. It stays loaded across the hop; closing the window returns the
   tab to where it came from.

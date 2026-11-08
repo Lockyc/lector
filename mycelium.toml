@@ -1,7 +1,7 @@
 name    = "lector"
 summary = "Curated rendered docs - a macOS console of grouped tabs, each a local Markdown repo rendered live with hot-reload and simple editing."
 kind    = "app"
-status  = "active"
+status  = "dormant"
 tags    = ["docs", "tauri", "macos", "markdown", "live-reload"]
 stack   = ["rust", "tauri", "javascript"]
 

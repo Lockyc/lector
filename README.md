@@ -11,6 +11,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Lockyc/lector" alt="License: MIT"></a>
 </p>
 
+> **Dormant.** lector still works and keeps taking shared-core updates and releases, but it isn't under active development.
+
 A macOS console of grouped tabs over locally-rendered documentation sites. One tab is one doc
 repo on disk, rendered live from its working tree: editing a `.md` file updates the tab
 immediately — no build step, no deploy, nothing published.

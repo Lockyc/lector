@@ -32,17 +32,14 @@ local documentation.
 [latest release](https://github.com/Lockyc/lector/releases/latest), unzip, and move `lector.app`
 to `/Applications`. macOS only.
 
-In **Claude Code**, from a clone of this repo, run `/lector:install` — it checks prerequisites (offering to install
-any that are missing), builds lector from source into `~/.lector`, installs `lector.app`
-to `/Applications`, and seeds your config.
-
-Or install from a terminal:
+Or build from source into `~/.lector` (needs Rust and Xcode Command Line Tools), which
+installs `lector.app` to `/Applications` and seeds your config:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Lockyc/lector/main/install.sh | bash
 ```
 
-Re-running either path rebuilds lector from the latest source; a downloaded or installed lector
+Re-running it rebuilds lector from the latest source; a downloaded or installed lector
 also updates itself (below).
 
 ## Updates

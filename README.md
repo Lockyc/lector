@@ -1,92 +1,58 @@
-<p align="center">
-  <img src="src-tauri/icons/icon.png" alt="lector app icon" width="128" height="128">
-</p>
+<img src="src-tauri/icons/icon.png" alt="lector" width="128" height="128">
 
-<h1 align="center">lector</h1>
+# lector
 
-<p align="center">
-  <a href="https://github.com/Lockyc/lector/releases/latest"><img src="https://img.shields.io/github/v/release/lockyc/lector?sort=semver&label=release" alt="Release"></a>
-  <img src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white" alt="Platform: macOS">
-  <img src="https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB?logo=tauri&logoColor=white" alt="Built with Tauri v2">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/Lockyc/lector" alt="License: MIT"></a>
-</p>
+[![Release](https://img.shields.io/github/v/release/lockyc/lector?sort=semver&label=release)](https://github.com/lockyc/lector/releases/latest)
+![Platform](https://img.shields.io/badge/platform-macOS-555)
+![Rust](https://img.shields.io/badge/rust-CE412B?logo=rust&logoColor=white)
+![Tauri](https://img.shields.io/badge/Tauri%20v2-24C8DB?logo=tauri&logoColor=white)
+[![License](https://img.shields.io/github/license/lockyc/lector)](LICENSE)
 
 > **Dormant.** lector still works and keeps taking shared-core updates and releases, but it isn't under active development.
 
-A macOS console of grouped tabs over locally-rendered documentation sites. One tab is one doc
-repo on disk, rendered live from its working tree: editing a `.md` file updates the tab
-immediately — no build step, no deploy, nothing published.
+Read the Markdown in your local repos as rendered sites while you edit them. Each repo opens as a
+themed site in a sidebar of tabs, rendered live from its working tree: saving a `.md` file
+updates the page immediately — no build step, no deploy, nothing published.
 
-lector has three sibling apps built the same way: **[warden](https://github.com/Lockyc/warden)**
-curates terminals, **[curator](https://github.com/Lockyc/curator)** curates browser tabs and
-**[flotilla](https://github.com/Lockyc/flotilla)** curates document workspaces; lector curates
-local documentation.
-
-## Status
-
-**In use and released** — see the [latest release](https://github.com/Lockyc/lector/releases/latest).
+![lector with five public repos in its sidebar, mycelium's README rendered with its page contents alongside](docs/screenshots/lector.png)
 
 ## Install
 
-**Download (no build):** grab `lector-<version>-macos.zip` from the
-[latest release](https://github.com/Lockyc/lector/releases/latest), unzip, and move `lector.app`
-to `/Applications`. macOS only.
+**Download:** grab `lector-<version>-macos.zip` from the
+[latest release](https://github.com/lockyc/lector/releases/latest), unzip, and move `lector.app`
+to `/Applications`. Releases are signed and notarized.
 
-Or build from source into `~/.lector` (needs Rust and Xcode Command Line Tools), which
-installs `lector.app` to `/Applications` and seeds your config:
+**Or build from source** into `~/.lector` (needs Rust and the Xcode Command Line Tools); this also
+seeds your config, and re-running it rebuilds from the latest source:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Lockyc/lector/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lockyc/lector/main/install.sh | bash
 ```
 
-Re-running it rebuilds lector from the latest source; a downloaded or installed lector
-also updates itself (below).
+lector updates itself: on launch, every 6 hours, and from **lector ▸ Check for Updates…**, an
+*Update available* bar offers **Update & Relaunch**. Nothing installs without your approval, and
+each update's signature is checked first.
 
-## Updates
+## Features
 
-lector updates itself — no reinstall. On launch, every 6 hours while open, and via
-**lector ▸ Check for Updates…**, it checks GitHub for a newer release; when one exists the
-sidebar shows an *Update available* bar with a one-click **Update & Relaunch**.
+- **One config file** declares windows, each with loose tabs and named groups of tabs; each tab
+  points at a local doc repo. Edits hot-reload on save, and a window added, removed or retitled
+  opens or closes live.
+- **Roots find repos for you.** Point a `[[window.root]]` at a projects folder and every git repo
+  under it becomes a tab, shown as a collapsible folder tree with a `⟳` rescan button.
+- **Tabs load on select**, rendered by [compositor](https://github.com/lockyc/compositor); the
+  sidebar dot shows which are loaded, and **⌘W** unloads the active one.
+- **Sidebar search** (**⌘⇧F**) narrows the list by tab title, folder path or group name.
+- **Collapse the sidebar** (**⌃⌘S**) to a thin strip; rest the pointer on the window's left edge
+  to slide it back in.
+- **Pop out a tab** (**⌘⇧O**) into its own window; closing that window returns it.
+- **Windows** — **Window ▸ New Window…** adds one, right-clicking a window's name banner edits or
+  deletes it, and with no window open lector lists them all. With no config it offers
+  **Create a starter config**.
+- **Navigation** — mouse side buttons and the ◀ ▶ ⌂ buttons, a page-load bar, **⌘⇧[** / **⌘⇧]**
+  for the previous / next tab and **⌘1–⌘9** to jump to one.
 
-- **Confirm-to-install** — nothing installs silently; you approve each update.
-- **Signed** — each update's signature is verified before it installs.
-- **Opt out** with `auto_update = false` (the **Check for Updates…** menu item still works).
-
-## Model
-
-- **`config.toml` is the source of truth**: one or more `[[window]]` blocks, each containing
-  loose `[[window.tab]]` entries and/or `[[window.group]]` sections of `[[window.group.tab]]`s.
-  Each tab points at a **`dir`** — a local doc repo. Edits hot-reload on save; a
-  `[[window]]` added, removed or retitled opens or closes live.
-- **`[[window.root]]` discovers repos for you.** Point a root at a projects dir (`dir`, with an
-  optional scan `depth`) and every git repo under it becomes a doc tab, shown as a collapsible
-  folder tree with a `⟳` rescan button. Discovered tabs are lazy — they load on select.
-- **Tabs load on select.** Selecting a tab renders its repo live with
-  [compositor](https://github.com/Lockyc/compositor); the sidebar dot shows whether it's loaded.
-  **⌘W** unloads the active tab.
-- **Sidebar search** — the field above the tab list narrows it as you type, matching tab titles,
-  folder paths and group names. **⌘⇧F** jumps into it; **↑**/**↓** pick a match, **Enter** opens
-  it, **Esc** clears the search.
-- **Collapse the sidebar** — the button beside the traffic lights (or **Tab ▸ Toggle Sidebar**,
-  **⌃⌘S**) hides it, leaving a thin strip with the tab's title. Rest the pointer on the window's
-  left edge to slide it in; moving onto the page hides it again. While it's collapsed, a dot on the
-  toggle stands in for the hidden update and error bars. Each window remembers its own choice.
-- **Pop-out tabs** — **⌘⇧O** (or the pop-out icon on a row's letter tile) moves the active tab
-  into its own window. It stays loaded across the hop; closing the window returns the
-  tab to where it came from.
-- **Windows and the home surface** — **⌘⇧W** closes a window and the **Window** menu reopens it;
-  a closed window stays closed when the config reloads. **Window ▸ New Window…** adds one, and
-  right-clicking a window's name banner edits its title and colour or deletes it. With no window
-  open, lector shows a home surface listing every window; with no config, it offers a
-  **Create a starter config** button. The **Config** menu opens the config file or
-  reveals it in Finder.
-- **Native navigation.** Mouse side-buttons drive back/forward through a tab's history, and a
-  determinate progress bar tracks page loading — both alongside the sidebar header's ◀ ▶ ⌂ buttons.
-- **Keyboard tab navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle to the previous/next
-  tab and **⌘1–⌘9** jump to a position; **Tab ▸ Cycle Tabs with ⌘1/⌘2** (or `tab_digit_keys =
-  "cycle"`) makes **⌘1** / **⌘2** cycle instead (jumps shift to **⌘3–⌘9**).
-
-## Config
+## Configuration
 
 `~/.config/lector/config.toml` (override with `LECTOR_CONFIG`). A fuller example is
 [`examples/config.toml`](examples/config.toml).
@@ -115,7 +81,7 @@ colour = "#4a9"
   depth = 4
 ```
 
-### Global
+**Global**
 
 | Key | Default | What it does |
 |---|---|---|
@@ -126,7 +92,7 @@ colour = "#4a9"
 | `auto_update` | `true` | Check for a new release automatically; **Check for Updates…** works either way. |
 | `tab_digit_keys` | `jump` | What ⌘1/⌘2 do: `jump` — ⌘1–⌘9 jump to a position; `cycle` — ⌘1 next, ⌘2 previous, jumps shift to ⌘3–⌘9. Hot-reloads. |
 
-### `[[window]]`
+**`[[window]]`**
 
 | Key | Default | What it does |
 |---|---|---|
@@ -136,7 +102,7 @@ colour = "#4a9"
 | `open_on_launch` | `false` | `false` opens the first `load_on_open` tab, else a blank screen; `true` opens the first tab even if it isn't loaded. |
 | `colour` | none | `#rgb` / `#rrggbb` accent for the window's name banner and tint. |
 
-### `[[window.tab]]` / `[[window.group.tab]]`
+**`[[window.tab]]` / `[[window.group.tab]]`**
 
 | Key | Default | What it does |
 |---|---|---|
@@ -144,13 +110,13 @@ colour = "#4a9"
 | `dir` | *required* | The doc repo to render (`~` expanded). A missing dir is a warning, not an error. |
 | `load_on_open` | `false` | Load this tab at launch instead of on first select. |
 
-### `[[window.group]]`
+**`[[window.group]]`**
 
 | Key | Default | What it does |
 |---|---|---|
 | `name` | *required* | Section header; unique within its window, including against root names. |
 
-### `[[window.root]]`
+**`[[window.root]]`**
 
 | Key | Default | What it does |
 |---|---|---|
@@ -158,37 +124,34 @@ colour = "#4a9"
 | `name` | basename of `dir` | The root's folder label in the sidebar. |
 | `depth` | `6` | How many levels deep to scan (≥ 1). |
 
-### CLI
+The app binary, `/Applications/lector.app/Contents/MacOS/lector`, doubles as a config tool:
+`lector validate [path]` prints the resolved windows and tabs plus any warnings, and
+`lector fmt [--check] [path]` rewrites a config in house style. Both default to the config path
+above.
 
-The app binary doubles as a config tool — `/Applications/lector.app/Contents/MacOS/lector`:
+## Related
 
-- **`lector validate [path]`** prints the resolved windows and tabs plus any warnings, exiting
-  non-zero on a load/parse/validation error.
-- **`lector fmt [--check] [path]`** rewrites a config in lector's house TOML style; `--check`
-  reports without writing.
+lector's siblings share its sidebar, config and app shell:
+[warden](https://github.com/lockyc/warden) — terminals,
+[curator](https://github.com/lockyc/curator) — browser tabs,
+[flotilla](https://github.com/lockyc/flotilla) — document workspaces.
 
-Both default to the config path above.
-
-## Build
+## Development
 
 Needs Rust and the Tauri CLI (`cargo install tauri-cli --version ^2`).
 
 ```sh
+git clone https://github.com/lockyc/lector && cd lector
 just run      # launch against examples/config.toml (never touches your real config)
 just test     # cargo test --workspace
-just gate     # the full pre-merge gate (no active [patch], fmt-check, clippy, tests, example-config fmt)
-just build    # build lector.app
-git config core.hooksPath .githooks   # once per clone: arms the pre-commit / pre-push hooks
+just gate     # the full pre-merge gate
 ```
 
-lector is built on four pinned shared crates —
-[compositor](https://github.com/Lockyc/compositor) (the render/serve engine),
-[chrome-core](https://github.com/Lockyc/chrome-core) (the
-sidebar), [config-core](https://github.com/Lockyc/config-core) (config primitives, formatter,
-root discovery) and [shell-core](https://github.com/Lockyc/shell-core) (release tooling and app
-shell). To build against a sibling checkout of one, see the `*-dev` / `*-pin` recipes in
-[`CLAUDE.md`](CLAUDE.md).
+lector builds on four pinned shared crates — [compositor](https://github.com/lockyc/compositor),
+[chrome-core](https://github.com/lockyc/chrome-core), [config-core](https://github.com/lockyc/config-core)
+and [shell-core](https://github.com/lockyc/shell-core). Working against a local checkout of one,
+the hooks and the release process: [CLAUDE.md](CLAUDE.md).
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [LICENSE](LICENSE).

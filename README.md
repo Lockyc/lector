@@ -17,9 +17,10 @@ A macOS console of grouped tabs over locally-rendered documentation sites. One t
 repo on disk, rendered live from its working tree: editing a `.md` file updates the tab
 immediately — no build step, no deploy, nothing published.
 
-lector has two sibling apps built the same way: **[warden](https://github.com/Lockyc/warden)**
-curates terminals and **[curator](https://github.com/Lockyc/curator)** curates browser tabs;
-lector curates local documentation.
+lector has three sibling apps built the same way: **[warden](https://github.com/Lockyc/warden)**
+curates terminals, **[curator](https://github.com/Lockyc/curator)** curates browser tabs and
+**[flotilla](https://github.com/Lockyc/flotilla)** curates document workspaces; lector curates
+local documentation.
 
 ## Status
 
@@ -31,7 +32,7 @@ lector curates local documentation.
 [latest release](https://github.com/Lockyc/lector/releases/latest), unzip, and move `lector.app`
 to `/Applications`. macOS only.
 
-In **Claude Code**, run `/lector:install` — it checks prerequisites (offering to install
+In **Claude Code**, from a clone of this repo, run `/lector:install` — it checks prerequisites (offering to install
 any that are missing), builds lector from source into `~/.lector`, installs `lector.app`
 to `/Applications`, and seeds your config.
 

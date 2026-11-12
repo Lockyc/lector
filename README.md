@@ -42,12 +42,15 @@ each update's signature is checked first.
   under it becomes a tab, shown as a collapsible folder tree with a `⟳` rescan button.
 - **Tabs load on select**, rendered by [compositor](https://github.com/lockyc/compositor); the
   sidebar dot shows which are loaded, and **⌘W** unloads the active one.
+- **Edit in place** — compositor's topbar toggle turns the rendered page into an editor that
+  saves back to the `.md`.
 - **Sidebar search** (**⌘⇧F**) narrows the list by tab title, folder path or group name.
 - **Collapse the sidebar** (**⌃⌘S**) to a thin strip; rest the pointer on the window's left edge
   to slide it back in.
 - **Pop out a tab** (**⌘⇧O**) into its own window; closing that window returns it.
 - **Windows** — **Window ▸ New Window…** adds one, right-clicking a window's name banner edits or
-  deletes it, and with no window open lector lists them all. With no config it offers
+  deletes it, and with no window open at launch lector lists them all; closing the last window
+  quits lector. With no config it offers
   **Create a starter config**.
 - **Navigation** — mouse side buttons and the ◀ ▶ ⌂ buttons, a page-load bar, **⌘⇧[** / **⌘⇧]**
   for the previous / next tab and **⌘1–⌘9** to jump to one.

@@ -16,10 +16,10 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 # The sidebar chrome: this crate is a thin include_str! wrapper, and build.rs writes the assets into
 # frontendDist before generate_context! embeds that dir.
-chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "23d7a1cc6c1e1c3b7aa909413a2b94b74cb9fb13" }
+chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "d526d54d507e16bf8082efcf0a49b8d4d1463b2b" }
 # Zero-dep by default — build_stamp() + materialize_scripts() are all build.rs needs.
 # `default-features = false` is LOAD-BEARING: without it this build-dep drags in the whole tauri tree.
-shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "81cb70f4ee805f28998b9c309237d338fadf9e6c", default-features = false }
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "bbe1fc76201f0c7ccc6637f98739fca4a9b4ec70", default-features = false }
 
 [dependencies]
 lector-config = { path = "../crates/lector-config" }
@@ -30,9 +30,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 # The render engine. One serve loop per live tab; lector never renders anything itself.
-compositor = { git = "https://github.com/Lockyc/compositor", rev = "88783c386328c22912c926949db06b5b86fc0940" }
+compositor = { git = "https://github.com/Lockyc/compositor", rev = "ed15b941d108889c7a98ff47f35edd8798af600a" }
 # The Tauri runtime sliver: register_plugins (window geometry, updater, process).
-shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "81cb70f4ee805f28998b9c309237d338fadf9e6c", features = ["runtime"] }
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "bbe1fc76201f0c7ccc6637f98739fca4a9b4ec70", features = ["runtime"] }
 # Unused directly in this crate's code — registration flows through shell_core::register_plugins,
 # not this dependency. They exist ONLY so tauri-build's ACL/permission-schema discovery (which walks
 # a crate's *direct* dependencies for tauri-plugin-* crates) can see the plugin and let

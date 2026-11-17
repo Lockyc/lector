@@ -1,13 +1,13 @@
-name    = "lector"
+name = "lector"
 summary = "Curated rendered docs - a macOS console of grouped tabs, each a local Markdown repo rendered live with hot-reload and simple editing."
-kind    = "app"
-status  = "dormant"
-tags    = ["docs", "tauri", "macos", "markdown", "live-reload"]
-stack   = ["rust", "tauri", "javascript"]
+status = "dormant"
+tags = ["docs", "tauri", "macos", "markdown", "live-reload"]
 
 [github]
 topics_extra = ["documentation"]
+description = "Curated rendered docs - a macOS console of grouped tabs, each a local Markdown repo rendered live with hot-reload and simple editing."
+topics = ["docs", "documentation", "javascript", "live-reload", "macos", "markdown", "rust", "tauri"]
 
 [[provides]]
-name    = "local-doc-console"
+name = "local-doc-console"
 summary = "Renders doc repos straight off the working tree — one compositor serve loop per live tab on an ephemeral loopback port, watching for edits. What curator structurally cannot do: no deploy, nothing published."

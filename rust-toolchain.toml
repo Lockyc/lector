@@ -11,5 +11,5 @@
 # newer channel for its CI/gate equivalence, and lector compiles its source with
 # this one. lector's build is the drift detector; do not "fix" it by matching.
 [toolchain]
-channel = "1.96.0"
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]

@@ -68,7 +68,11 @@ impl WindowHost for LectorHost {
 
     fn edit_failed(&self, app: &AppHandle, message: &str) {
         eprintln!("window edit failed: {message}");
-        crate::emit_to_all_chrome(app, "config-error", message.to_string());
+        crate::emit_to_all_chrome(
+            app,
+            crate::events::ChromeEvent::ConfigError,
+            message.to_string(),
+        );
     }
 
     fn changed(&self, app: &AppHandle) {

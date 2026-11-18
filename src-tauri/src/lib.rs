@@ -1,3 +1,4 @@
+use events::ChromeEvent;
 use lector_config::WindowTabs;
 use shell_core::windows::plan::{entry_for_title, Slot, WindowDecl, WindowOp};
 use shell_core::windows::WindowSet;
@@ -5,6 +6,9 @@ use std::collections::HashSet;
 use tauri::{Emitter, Manager};
 
 mod commands;
+#[cfg(test)]
+mod contract;
+mod events;
 mod reload;
 mod servers;
 mod webviews;
@@ -46,11 +50,11 @@ fn open_labels(app: &tauri::AppHandle) -> Vec<String> {
 /// Emit an event to every open window's chrome sidebar.
 pub(crate) fn emit_to_all_chrome<S: serde::Serialize + Clone>(
     app: &tauri::AppHandle,
-    event: &str,
+    event: ChromeEvent,
     payload: S,
 ) {
     for label in open_labels(app) {
-        let _ = app.emit_to(label.as_str(), event, payload.clone());
+        let _ = app.emit_to(label.as_str(), event.name(), payload.clone());
     }
 }
 
@@ -199,7 +203,7 @@ pub(crate) fn window_retitled(app: &tauri::AppHandle, label: &str, old: &str, de
     state.retitle_origins(old, &decl.title);
     state.retitle_window(old, &decl.title, decl.colour.clone());
     state.set_colour(label, decl.colour.clone());
-    let _ = app.emit_to(label, "config-reloaded", ());
+    let _ = app.emit_to(label, ChromeEvent::ConfigReloaded.name(), ());
 }
 
 /// Mirror the popped-out window count into the [`WindowSet`], which keeps the home surface away
@@ -246,40 +250,40 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
         let detached = state.detached.lock().expect("detached lock");
         detached.get(l).map(|d| d.tab_label.clone())
     });
-    let emit = |event: &str| {
-        let _ = app.emit_to(target, event, ());
+    let emit = |event: ChromeEvent| {
+        let _ = app.emit_to(target, event.name(), ());
     };
     match routed.action {
         SpineAction::Nav(TabNavAction::Next) => {
-            let _ = app.emit_to(target, "nav-tab", NavTab { dir: 1, from });
+            let _ = app.emit_to(target, ChromeEvent::NavTab.name(), NavTab { dir: 1, from });
         }
         SpineAction::Nav(TabNavAction::Prev) => {
-            let _ = app.emit_to(target, "nav-tab", NavTab { dir: -1, from });
+            let _ = app.emit_to(target, ChromeEvent::NavTab.name(), NavTab { dir: -1, from });
         }
         SpineAction::Nav(TabNavAction::Jump(n)) => {
-            let _ = app.emit_to(target, "jump-tab", n);
+            let _ = app.emit_to(target, ChromeEvent::JumpTab.name(), n);
         }
         // ⌘W unloads the ACTIVE TAB — it does not close the window. The chrome owns which tab is
         // active and the dot repaint, so it drives unload_tab off this event.
-        SpineAction::CloseTab => emit("close-tab"),
+        SpineAction::CloseTab => emit(ChromeEvent::CloseTab),
         // Closing a pop-out window docks its tab: its `Destroyed` handler runs `redock`.
         SpineAction::DockPoppedOut | SpineAction::CloseWindow => {
             if let Some(w) = app.get_window(target) {
                 let _ = w.close();
             }
         }
-        SpineAction::PopOutTab => emit("pop-out-tab"),
+        SpineAction::PopOutTab => emit(ChromeEvent::PopOutTab),
         // ⌘⇧F: the content webview may hold first responder, so make the chrome the key view
         // before it focuses its field.
         SpineAction::FindInSidebar => {
             if let Some(chrome) = app.get_webview(target) {
                 let _ = chrome.set_focus();
             }
-            emit("find-in-sidebar");
+            emit(ChromeEvent::FindInSidebar);
         }
-        SpineAction::ToggleSidebar => emit("toggle-sidebar"),
+        SpineAction::ToggleSidebar => emit(ChromeEvent::ToggleSidebar),
         // chrome-core owns self-update; forward to its checkForUpdateNow().
-        SpineAction::CheckUpdates => emit("check-update"),
+        SpineAction::CheckUpdates => emit(ChromeEvent::CheckUpdate),
     }
 }
 
@@ -377,7 +381,7 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
     // targets only that window's chrome (scoped only in concert with chrome.js's webview-bound
     // listeners, as `on_spine_action`'s emits are). If the origin was just reopened its
     // fresh mount already refreshes, so a missed emit self-corrects.
-    let _ = app.emit_to(origin_wid.as_str(), "config-reloaded", ());
+    let _ = app.emit_to(origin_wid.as_str(), ChromeEvent::ConfigReloaded.name(), ());
 }
 
 /// Load the config and apply it — the home surface's "Create a starter config" button, which turns
@@ -414,14 +418,14 @@ pub(crate) fn apply_clean_load(
     for label in &opened {
         show_first_tab(app, label);
     }
-    emit_to_all_chrome(app, "config-reloaded", ());
+    emit_to_all_chrome(app, ChromeEvent::ConfigReloaded, ());
     refresh_menu(app);
 }
 
 /// Surface a config that failed to load: every chrome and the home surface show the error, and
 /// the last-good config (and every running server) is left untouched.
 pub(crate) fn surface_load_error(app: &tauri::AppHandle, msg: &str) {
-    emit_to_all_chrome(app, "config-error", msg.to_string());
+    emit_to_all_chrome(app, ChromeEvent::ConfigError, msg.to_string());
     app.state::<WindowSet>()
         .set_load_error(app, Some(msg.to_string()));
 }

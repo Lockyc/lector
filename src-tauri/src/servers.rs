@@ -112,21 +112,25 @@ impl Servers {
         }
     }
 
-    /// Move `old`'s server to `new` — a popped-out tab whose origin came back under another window
-    /// label keeps the server its detached window is showing. A server already under `new` stops.
-    pub fn rekey(&self, old: &str, new: &str) {
-        if old == new {
-            return;
-        }
-        let replaced = {
+    /// Move each `(old, new)` pair's server to `new` — popped-out tabs whose origins came back under
+    /// other window labels keep the servers their detached windows are showing. Every server moves
+    /// out before any moves in, so two tabs swapping labels keep both. A server already under a
+    /// `new` that is not itself moving stops.
+    pub fn rekey(&self, moves: &[(String, String)]) {
+        let replaced: Vec<SiteServer> = {
             let mut live = self.live.lock().expect("servers lock");
-            match live.remove(old) {
-                Some(s) => live.insert(new.to_string(), s),
-                None => None,
-            }
+            let moving: Vec<(&String, SiteServer)> = moves
+                .iter()
+                .filter(|(old, new)| old != new)
+                .filter_map(|(old, new)| live.remove(old).map(|s| (new, s)))
+                .collect();
+            moving
+                .into_iter()
+                .filter_map(|(new, s)| live.insert(new.clone(), s))
+                .collect()
         };
         // Outside the lock, as in `stop`.
-        if let Some(h) = replaced.and_then(|s| s.handle) {
+        for h in replaced.into_iter().filter_map(|s| s.handle) {
             h.shutdown();
         }
     }

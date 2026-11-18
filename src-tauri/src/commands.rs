@@ -394,12 +394,10 @@ impl AppState {
     /// `reload::reconcile`'s `retain` stops the tabs' servers like any other removed tab's.
     pub fn settle_detached(&self, entries: &[WindowEntry]) -> Vec<String> {
         let mut detached = self.detached.lock().expect("detached lock");
-        let mut orphans = Vec::new();
+        let (mut orphans, mut moves) = (Vec::new(), Vec::new());
         detached.retain(|label, d| match entry_for_title(entries, &d.origin_title) {
             Some(home) => {
-                if let Some(old) = d.rehome(&home.id) {
-                    self.servers.rekey(&old, &d.tab_label);
-                }
+                moves.extend(d.rehome(&home.id).map(|old| (old, d.tab_label.clone())));
                 true
             }
             None => {
@@ -407,6 +405,7 @@ impl AppState {
                 false
             }
         });
+        self.servers.rekey(&moves);
         orphans
     }
 
@@ -415,14 +414,12 @@ impl AppState {
     /// it left.
     pub fn popped_out_of(&self, wid: &str, title: &str) {
         let mut detached = self.detached.lock().expect("detached lock");
-        for d in detached
+        let moves: Vec<(String, String)> = detached
             .values_mut()
             .filter(|d| d.origin_title.trim() == title.trim())
-        {
-            if let Some(old) = d.rehome(wid) {
-                self.servers.rekey(&old, &d.tab_label);
-            }
-        }
+            .filter_map(|d| d.rehome(wid).map(|old| (old, d.tab_label.clone())))
+            .collect();
+        self.servers.rekey(&moves);
     }
 
     /// Resolve the popped-out tab `detached_label`'s origin by title against `entries` and rehome
@@ -437,7 +434,7 @@ impl AppState {
         let d = detached.get_mut(detached_label)?;
         let home = entry_for_title(entries, &d.origin_title)?;
         if let Some(old) = d.rehome(&home.id) {
-            self.servers.rekey(&old, &d.tab_label);
+            self.servers.rekey(&[(old, d.tab_label.clone())]);
         }
         Some((home.id.clone(), home.open))
     }
@@ -994,6 +991,30 @@ mod tests {
             state.settle_detached(&entries),
             vec!["shell-detach:work:tab-x".to_string()]
         );
+    }
+
+    #[test]
+    fn two_popped_out_tabs_whose_origins_swap_labels_keep_both_servers() {
+        // "a b" opened beside a live "a-b", so it took "a-b-2". With both closed, the plan gives
+        // config-first "a b" the plain label.
+        let state = AppState::new();
+        for (wid, title, port) in [("a-b-2", "a b", 1), ("a-b", "a-b", 2)] {
+            let tab = format!("{wid}:tab-x");
+            state.servers.register_unserved_for_test(&tab, port);
+            state.detached.lock().unwrap().insert(
+                format!("shell-detach:{tab}"),
+                LectorDetached {
+                    origin_wid: wid.into(),
+                    origin_title: title.into(),
+                    tab_label: tab,
+                    port,
+                },
+            );
+        }
+        let entries = [entry("a-b", "a b", false), entry("a-b-2", "a-b", false)];
+        assert!(state.settle_detached(&entries).is_empty());
+        assert_eq!(state.servers.port("a-b:tab-x"), Some(1), "a b's server");
+        assert_eq!(state.servers.port("a-b-2:tab-x"), Some(2), "a-b's server");
     }
 
     #[test]

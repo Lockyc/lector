@@ -506,6 +506,32 @@ prop_state_machine! {
     fn popped_out_tabs_follow_their_origin_window(sequential 1..40 => Lector);
 }
 
+/// Run `steps` through the model and lector, checking every invariant after each.
+fn replay(steps: &[Step]) {
+    let mut model = Model::default();
+    let mut sut = <Lector as StateMachineTest>::init_test(&model);
+    for step in steps {
+        assert!(Model::preconditions(&model, step), "{step:?} can run");
+        model = <Model as ReferenceStateMachine>::apply(model, step);
+        sut = <Lector as StateMachineTest>::apply(sut, &model, step.clone());
+        Lector::check_invariants(&sut, &model);
+    }
+}
+
+/// Two closed windows whose titles sanitize alike swap labels in one settle, each with a tab
+/// popped out of it: both servers move at once.
+#[test]
+fn closed_origins_that_swap_labels_keep_both_popped_out_servers() {
+    replay(&[
+        Step::Add("a-b".into(), 0),
+        Step::Add("a b".into(), 0),
+        Step::PopOut("a-b".into(), true),
+        Step::PopOut("a b".into(), true),
+        Step::Close("a-b".into()),
+        Step::Close("a b".into()),
+    ]);
+}
+
 /// The plan's labels are what the model's windows get, so a freed label really is reused.
 #[test]
 fn the_plan_reuses_a_freed_label() {

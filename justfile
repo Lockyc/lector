@@ -26,6 +26,11 @@ validate path="examples/config.toml":
 test:
     cargo test --workspace
 
+# Run the popped-out-tab state-machine model for many more cases than the gate (occasional)
+[group("check")]
+soak cases="5000":
+    PROPTEST_CASES={{cases}} cargo test -p lector --lib detach_model
+
 # Type-check the workspace without producing binaries
 [group("check")]
 check:

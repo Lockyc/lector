@@ -406,6 +406,13 @@ impl AppState {
             }
         });
         self.servers.rekey(&moves);
+        // A closed window's active mark stays under the label it closed with, which a rehomed tab
+        // may now hold: a popped-out tab is never its origin's active tab.
+        let out: HashSet<&String> = detached.values().map(|d| &d.tab_label).collect();
+        self.active
+            .lock()
+            .expect("active lock")
+            .retain(|_, tab| !out.contains(tab));
         orphans
     }
 
@@ -1015,6 +1022,31 @@ mod tests {
         assert!(state.settle_detached(&entries).is_empty());
         assert_eq!(state.servers.port("a-b:tab-x"), Some(1), "a b's server");
         assert_eq!(state.servers.port("a-b-2:tab-x"), Some(2), "a-b's server");
+    }
+
+    #[test]
+    fn a_tab_rehomed_onto_a_closed_windows_old_label_is_not_its_active_tab() {
+        // "a-b" took "a-b-2" beside an open "a b" and popped a tab out; "a b" closed with that
+        // tab's twin active, then "a-b" closed and the plan swapped their labels.
+        let state = AppState::new();
+        state.set_active("a-b:tab-x");
+        state.servers.register_unserved_for_test("a-b-2:tab-x", 1);
+        state.detached.lock().unwrap().insert(
+            "shell-detach:a-b-2:tab-x".into(),
+            LectorDetached {
+                origin_wid: "a-b-2".into(),
+                origin_title: "a-b".into(),
+                tab_label: "a-b-2:tab-x".into(),
+                port: 1,
+            },
+        );
+        let entries = [entry("a-b", "a-b", false), entry("a-b-2", "a b", false)];
+        assert!(state.settle_detached(&entries).is_empty());
+        assert_eq!(
+            state.detached_tab_labels(),
+            HashSet::from(["a-b:tab-x".to_string()])
+        );
+        assert_eq!(state.active_for("a-b"), None);
     }
 
     #[test]

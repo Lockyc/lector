@@ -14,6 +14,8 @@ with nothing deployed — no build step, no publish, nothing to keep in sync. It
 sibling to two existing apps: **warden** curates terminals, **curator** curates browser tabs,
 lector curates local documentation.
 
+An agent runs it as `SHELL_CORE_UNFOCUSED=1 just run`, which never takes the operator's focus.
+
 ## Current state vs intended architecture
 
 **The app is complete and functional end-to-end.** `crates/lector-config` is complete

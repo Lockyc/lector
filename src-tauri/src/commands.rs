@@ -697,8 +697,7 @@ pub fn raise_popped_window(
         .map(|(l, _)| l.clone());
     if let Some(l) = target {
         if let Some(win) = app.get_window(&l) {
-            let _ = win.unminimize();
-            let _ = win.set_focus();
+            shell_core::focus::bring_forward(&win);
         }
     }
 }

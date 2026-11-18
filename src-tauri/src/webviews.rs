@@ -70,6 +70,7 @@ pub fn build_window(
             .inner_size(win_w, win_h)
             .hidden_title(true)
             .title_bar_style(TitleBarStyle::Overlay)
+            .focused(shell_core::focus::focused())
             .build()?;
     let window = webview_window.as_ref().window();
     window.set_theme(crate::theme_for(

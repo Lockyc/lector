@@ -8,6 +8,8 @@ use tauri::{Emitter, Manager};
 mod commands;
 #[cfg(test)]
 mod contract;
+#[cfg(test)]
+mod detach_model;
 mod events;
 mod reload;
 mod servers;
@@ -176,10 +178,20 @@ pub(crate) fn open_window(
 /// every other popped-out tab follows its origin's current label
 /// ([`commands::AppState::settle_detached`]).
 pub(crate) fn window_closed(app: &tauri::AppHandle) {
-    let set = app.state::<WindowSet>();
+    settle_detached(app);
+    // During ⌘Q every window is being destroyed and the menu dies with the app.
+    if !app.state::<WindowSet>().is_quitting() {
+        refresh_menu(app);
+    }
+}
+
+/// Destroy the popped-out windows whose origin left the config, and rehome the rest
+/// ([`commands::AppState::settle_detached`]). A closed origin is never destroyed, so a clean load
+/// runs this as well as [`window_closed`].
+fn settle_detached(app: &tauri::AppHandle) {
     let orphans = app
         .state::<commands::AppState>()
-        .settle_detached(&set.entries());
+        .settle_detached(&app.state::<WindowSet>().entries());
     if !orphans.is_empty() {
         for detached in orphans {
             if let Some(w) = app.get_window(&detached) {
@@ -187,10 +199,6 @@ pub(crate) fn window_closed(app: &tauri::AppHandle) {
             }
         }
         sync_detached(app);
-    }
-    // During ⌘Q every window is being destroyed and the menu dies with the app.
-    if !set.is_quitting() {
-        refresh_menu(app);
     }
 }
 
@@ -414,6 +422,7 @@ pub(crate) fn apply_clean_load(
             _ => None,
         })
         .collect();
+    settle_detached(app);
     apply_config(app, cfg, warnings);
     for label in &opened {
         show_first_tab(app, label);

@@ -200,7 +200,7 @@ the origin first if the user closed it while the tab was out.
   detached window); and `reload::reconcile`'s `Servers::retain` unions in the detached labels so a
   hot-reload can't drop a popped-out tab's server mid-session. A *genuinely* removed tab's
   server-stop is deferred to `redock`'s tab-removed branch — unless its whole window left the
-  config, when `window_closed` (`lib.rs`) closes the detached window with it. See
+  config, when `settle_detached` (`lib.rs`) closes the detached window with it. See
   `commands.rs` / `reload.rs`.
 - **State:** `AppState.detached: Mutex<HashMap<detached_label, LectorDetached>>`, where
   `LectorDetached { origin_wid, origin_title, tab_label, port }`, the origin found by title (a

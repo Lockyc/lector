@@ -456,3 +456,34 @@ fn the_fixture_reuses_a_freed_label() {
     assert_eq!(w.add("work!", 1), "work");
     assert_eq!(w.open("job"), "job");
 }
+
+/// The body of the top-level `fn name` in `lib.rs`.
+fn lib_fn_body(name: &str) -> &'static str {
+    const LIB_RS: &str = include_str!("lib.rs");
+    let start = LIB_RS
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("lib.rs defines {name}"));
+    let body = &LIB_RS[start..];
+    &body[..body.find("\n}\n").expect("the function closes")]
+}
+
+/// The model's `reloaded` and `closed` stand in for `lib.rs` paths it can't drive without a running
+/// app, so this holds those paths to the steps the model gives them.
+#[test]
+fn the_lib_rs_paths_settle_where_the_model_does() {
+    let load = lib_fn_body("apply_clean_load");
+    let applied = load
+        .find(".apply(app")
+        .expect("apply_clean_load applies the window set");
+    let settled = load
+        .find("settle_detached(app)")
+        .expect("apply_clean_load settles the popped-out tabs: a closed origin has no Destroyed");
+    assert!(
+        applied < settled,
+        "apply_clean_load settles against the entries from before WindowSet::apply"
+    );
+    assert!(
+        lib_fn_body("window_closed").contains("settle_detached(app)"),
+        "window_closed settles the popped-out tabs"
+    );
+}

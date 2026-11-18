@@ -208,6 +208,14 @@ fn settle_detached<R: LectorRuntime>(app: &AppHandle<R>) {
     }
 }
 
+/// [`WindowHost::changed`](shell_core::windows::WindowHost::changed): a window form's rename or
+/// delete landed in the [`WindowSet`] ahead of the config reload. It can relabel or drop a closed
+/// window, which no `Destroyed` reports, so the popped-out tabs settle here too.
+pub(crate) fn window_form_landed<R: LectorRuntime>(app: &AppHandle<R>) {
+    settle_detached(app);
+    R::refresh_menu(app);
+}
+
 /// [`WindowHost::retitled`](shell_core::windows::WindowHost::retitled): the window titled `old`,
 /// under `label`, changed title or colour in place; carry it into `last_cfg` (so
 /// [`labelled_windows`] keeps the window before the reload echo) and into the origin titles of the
@@ -846,6 +854,42 @@ mod tests {
             state.servers.shutdown_all();
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    #[test]
+    fn a_window_form_on_a_closed_origin_settles_its_popped_out_tab() {
+        // The Edit or Delete Window… form stays open after its window closes.
+        let app = mock_app();
+        let app = app.handle();
+        let dir = doc_dir("form-closed");
+        let both = config(&[("A", vec![(&dir, true)]), ("B", vec![])]);
+        apply_clean_load(app, &both, &[]);
+        let state = app.state::<commands::AppState>();
+        let set = app.state::<MockSet>();
+        let out = pop_out(app, "A", &tab_label(&state, "A", &dir));
+        set.user_close(app, "A");
+
+        set.rename(app, "A", "Renamed");
+        set.form_changed(app);
+        let renamed = crate::runtime::Windows::entries(&*set)[0].id.clone();
+        assert_eq!(
+            renamed, "Renamed",
+            "the closed window's label follows its title"
+        );
+        assert_eq!(
+            state.detached.lock().unwrap()[&out].origin_wid,
+            renamed,
+            "its popped-out tab follows at once"
+        );
+
+        set.delete(app, &renamed);
+        set.form_changed(app);
+        assert!(
+            state.detached.lock().unwrap().is_empty(),
+            "a deleted origin takes its popped-out tab"
+        );
+        state.servers.shutdown_all();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

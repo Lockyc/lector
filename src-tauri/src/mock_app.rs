@@ -163,7 +163,7 @@ impl MockSet {
 
     /// `WindowHost::changed`, which the window form calls once its steps landed.
     pub fn form_changed(&self, app: &AppHandle<MockRuntime>) {
-        MockRuntime::refresh_menu(app);
+        crate::window_form_landed(app);
     }
 }
 

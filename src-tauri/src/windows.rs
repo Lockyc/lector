@@ -76,7 +76,7 @@ impl WindowHost for LectorHost {
     }
 
     fn changed(&self, app: &AppHandle) {
-        crate::refresh_menu(app);
+        crate::window_form_landed(app);
     }
 }
 

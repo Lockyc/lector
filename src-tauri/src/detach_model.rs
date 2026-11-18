@@ -3,9 +3,10 @@
 //! popped-out tab pointing at the wrong window, shown twice, or holding another window's tab.
 //!
 //! The system under test is lector itself on the mock runtime (`mock_app.rs`): each step is the
-//! `lib.rs` path the app runs for it. The window form's Edit lands in the window set at once and
-//! in the app only when the config watcher echoes the file it wrote, so it is a separate step
-//! from that echo ([`Step::Reload`]).
+//! `lib.rs` path the app runs for it. The window form's Edit and Delete land in the window set
+//! at once and in the app only when the config watcher echoes the file it wrote, so they are
+//! separate steps from that echo ([`Step::Reload`]), and a form can target a window the user
+//! closed while it was open.
 
 use crate::commands::AppState;
 use crate::mock_app::{config, doc_dir, mock_app, pop_out, MockSet, WindowSpec};
@@ -214,6 +215,7 @@ impl ReferenceStateMachine for Model {
         if !titles.is_empty() {
             let any = proptest::sample::select(titles);
             steps.push(any.clone().prop_map(Step::Delete).boxed());
+            steps.push(any.clone().prop_map(Step::FormDelete).boxed());
             if !free.is_empty() {
                 steps.push(
                     (any, proptest::sample::select(free))
@@ -255,7 +257,7 @@ impl ReferenceStateMachine for Model {
             Step::Add(t, _) => !configured(t),
             Step::Delete(t) | Step::FormDelete(t) => configured(t),
             Step::Reload => true,
-            Step::FormRename { old, new } => p.is_open(old) && !configured(new),
+            Step::FormRename { old, new } => configured(old) && !configured(new),
             // The user closing the last window, with nothing popped out, quits.
             Step::Close(t) => p.is_open(t) && (p.live.len() > 1 || !state.popped.is_empty()),
             Step::Reopen(t) => configured(t) && !p.is_open(t),

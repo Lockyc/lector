@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 00f4f8d8772653988d31c698ecbd1fac80aba7c122cdbbffae623f7c67059ab2 # shrinks to (initial_state, transitions, seen_counter) = (Model { plan: Plan { titles: [], live: {} }, popped: {} }, [Add("a b", 0), Add("a-b", 0), PopOut("a-b", true), Close("a-b"), Close("a b"), Reopen("a-b")], None)
+cc 0cf389af830b07c612c092311a0bf16c7e8f8d541b550f1c83be3660d3a8d1ee # shrinks to (initial_state, transitions, seen_counter) = (Model { plan: Plan { titles: [], live: {} }, popped: {} }, [Add("a b", 1), FormDelete("a b"), Add("a b", 0), PopOut("a b", false), Close("a b"), FormDelete("a b")], None)

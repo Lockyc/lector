@@ -464,7 +464,11 @@ impl Default for AppState {
 /// leaves the tab cold and returns the message. Split out from the `#[tauri::command]` wrapper so
 /// `run()`'s launch-time `open_on_launch` selection can call the exact same path a click does,
 /// rather than a shadow copy of start-then-show-then-set_active.
-pub fn select(app: &tauri::AppHandle, state: &AppState, label: &str) -> Result<(), String> {
+pub fn select<R: crate::runtime::LectorRuntime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    label: &str,
+) -> Result<(), String> {
     let view = state
         .view(label)
         .ok_or_else(|| format!("no such tab: {label}"))?;

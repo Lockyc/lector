@@ -16,10 +16,11 @@
 //! silently show a different repo's site inside this tab — is cancelled, and handed to the system
 //! browser only when [`escapes_to_browser`] allows its scheme.
 
+use crate::runtime::LectorRuntime;
 use shell_core::window_of;
 use tauri::webview::WebviewBuilder;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, TitleBarStyle, Url, WebviewUrl,
+    AppHandle, LogicalPosition, LogicalSize, Manager, Runtime, TitleBarStyle, Url, WebviewUrl,
     WebviewWindow, Window,
 };
 
@@ -57,21 +58,21 @@ fn hole_for(window_id: &str) -> HoleRect {
 /// Build a window and its chrome (sidebar) webview; closing it is the `WindowSet`'s. `window_id`
 /// (the `WindowSet` label) becomes the window label and namespaces the content webview labels
 /// (`shell_core::child_label`, `{window_id}:tab-<hash>`).
-pub fn build_window(
-    app: &AppHandle,
+pub fn build_window<R: LectorRuntime>(
+    app: &AppHandle<R>,
     window_id: &str,
     title: &str,
     win_w: f64,
     win_h: f64,
-) -> tauri::Result<WebviewWindow> {
-    let webview_window =
+) -> tauri::Result<WebviewWindow<R>> {
+    let builder =
         tauri::WebviewWindowBuilder::new(app, window_id, WebviewUrl::App("index.html".into()))
             .title(title)
             .inner_size(win_w, win_h)
             .hidden_title(true)
             .title_bar_style(TitleBarStyle::Overlay)
-            .focused(shell_core::focus::focused())
-            .build()?;
+            .focused(shell_core::focus::focused());
+    let webview_window = R::build_window(app, window_id, builder)?;
     let window = webview_window.as_ref().window();
     window.set_theme(crate::theme_for(
         app.state::<crate::commands::AppState>().dark_mode(),
@@ -97,7 +98,7 @@ pub fn set_hole_rect(window: &Window, hole: HoleRect) {
 
 /// Hide every content webview in the window except `label` (which is shown). The single switching
 /// primitive: lector shows exactly one tab at a time.
-fn raise_only(window: &Window, label: &str) -> Result<(), String> {
+fn raise_only<R: Runtime>(window: &Window<R>, label: &str) -> Result<(), String> {
     for wv in window.webviews() {
         if wv.label() == window.label() {
             continue;
@@ -168,7 +169,7 @@ fn accent_rgba(colour: Option<&str>) -> (f64, f64, f64, f64) {
 ///
 /// The webview's `on_navigation` is gated by [`is_own_origin`]: only this tab's own loopback origin
 /// navigates in place, everything else escapes to the system browser (see the module doc).
-fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
+fn show_in<R: LectorRuntime>(window: &Window<R>, label: &str, port: u16) -> Result<(), String> {
     let url: Url = format!("http://127.0.0.1:{port}/")
         .parse()
         .map_err(|e| format!("{e}"))?;
@@ -216,9 +217,7 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
                 .app_handle()
                 .state::<crate::commands::AppState>()
                 .colour_for(window.label());
-            shell_core::progress_bar::install(&wv, accent_rgba(accent.as_deref()));
-            // The page composites over the chrome, which can't see the pointer leave for it.
-            shell_core::web::pointer::watch(&wv);
+            R::decorate_content(&wv, accent_rgba(accent.as_deref()));
         }
     }
     raise_only(window, label)
@@ -228,7 +227,7 @@ fn show_in(window: &Window, label: &str, port: u16) -> Result<(), String> {
 /// hide every other tab in the window. `window` is resolved from `label`'s own `{window_id}:…`
 /// prefix — the normal (origin-window) case, including a redocked tab (its label's prefix is
 /// always its origin window's id).
-pub fn show(app: &AppHandle, label: &str, port: u16) -> Result<(), String> {
+pub fn show<R: LectorRuntime>(app: &AppHandle<R>, label: &str, port: u16) -> Result<(), String> {
     let window_id = window_of(label).unwrap_or_default();
     let window = app.get_window(window_id).ok_or("no such window")?;
     show_in(&window, label, port)
@@ -260,7 +259,7 @@ pub fn seed_hole(window_label: &str, hole: HoleRect) {
 /// window. No-op if it was never created (an unload of a tab that was never selected). Used by
 /// `unload_tab` so a cold tab doesn't strand a dead-connection page on screen — without this, closing
 /// the server but leaving the webview up shows a broken page instead of the app's empty state.
-pub fn close(app: &AppHandle, label: &str) {
+pub fn close<R: Runtime>(app: &AppHandle<R>, label: &str) {
     let window_id = window_of(label).unwrap_or_default();
     let Some(window) = app.get_window(window_id) else {
         return;

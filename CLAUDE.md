@@ -51,7 +51,9 @@ commands, config hot-reload.
   `capabilities/default.json`, plugin registration, the `Servers` supervisor (`servers.rs`), the
   chrome controller + commands (`commands.rs`), content-webview management + link escape
   (`webviews.rs`), the shared launch/hot-reload reconciliation path (`reload.rs`), the window
-  lifecycle (`windows.rs`), `run()`'s full setup (`lib.rs`), and the `validate`/`fmt` CLI.
+  lifecycle (`windows.rs`), `run()`'s full setup (`lib.rs`), and the `validate`/`fmt` CLI. The
+  load paths in `lib.rs` are generic over `runtime::LectorRuntime`, so the tests drive them on
+  tauri's `MockRuntime`.
 - **`crates/lector-config`** — the config parser: config-core's shared `Window` with lector's
   `LectorWindow` extras (a lector tab carries a `dir` — a local doc repo path — rather than a
   `url`), `parse_and_validate` / `load_config`, `resolve_config_path`, the `hash` helper, the

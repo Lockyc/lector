@@ -1,9 +1,10 @@
 use events::ChromeEvent;
 use lector_config::WindowTabs;
+use runtime::{LectorRuntime, Windows as _};
 use shell_core::windows::plan::{entry_for_title, Slot, WindowDecl, WindowOp};
 use shell_core::windows::WindowSet;
 use std::collections::HashSet;
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 mod commands;
 #[cfg(test)]
@@ -12,6 +13,7 @@ mod contract;
 mod detach_model;
 mod events;
 mod reload;
+mod runtime;
 mod servers;
 mod webviews;
 mod windows;
@@ -40,8 +42,8 @@ fn log_config_warnings(warnings: &[lector_config::Warning]) {
 }
 
 /// The labels of every open window, config order.
-fn open_labels(app: &tauri::AppHandle) -> Vec<String> {
-    app.state::<WindowSet>()
+fn open_labels<R: LectorRuntime>(app: &AppHandle<R>) -> Vec<String> {
+    app.state::<R::Windows>()
         .entries()
         .into_iter()
         .filter(|e| e.open)
@@ -50,8 +52,8 @@ fn open_labels(app: &tauri::AppHandle) -> Vec<String> {
 }
 
 /// Emit an event to every open window's chrome sidebar.
-pub(crate) fn emit_to_all_chrome<S: serde::Serialize + Clone>(
-    app: &tauri::AppHandle,
+pub(crate) fn emit_to_all_chrome<R: LectorRuntime, S: serde::Serialize + Clone>(
+    app: &AppHandle<R>,
     event: ChromeEvent,
     payload: S,
 ) {
@@ -61,8 +63,10 @@ pub(crate) fn emit_to_all_chrome<S: serde::Serialize + Clone>(
 }
 
 /// Every window of the last clean load under its [`WindowSet`] label, and whether it is open.
-fn labelled_windows(app: &tauri::AppHandle) -> Vec<(String, lector_config::WindowConfig, bool)> {
-    let entries = app.state::<WindowSet>().entries();
+fn labelled_windows<R: LectorRuntime>(
+    app: &AppHandle<R>,
+) -> Vec<(String, lector_config::WindowConfig, bool)> {
+    let entries = app.state::<R::Windows>().entries();
     app.state::<commands::AppState>()
         .last_cfg()
         .windows
@@ -74,7 +78,7 @@ fn labelled_windows(app: &tauri::AppHandle) -> Vec<(String, lector_config::Windo
 /// Resolve every window's tabs under its current label and run the shared [`reload::reconcile`]
 /// (tab-server reconciliation — the same path for launch-time eager-start and hot-reload), then
 /// drop the webviews and active marks of tabs it removed.
-fn sync_tabs(app: &tauri::AppHandle) {
+fn sync_tabs<R: LectorRuntime>(app: &AppHandle<R>) {
     let state = app.state::<commands::AppState>();
     let views = reload::reconcile(&state, &labelled_windows(app));
 
@@ -98,8 +102,8 @@ fn sync_tabs(app: &tauri::AppHandle) {
 
 /// Apply a freshly-loaded config's app-wide settings and every open window's theme, then
 /// [`sync_tabs`]. `cfg` must already be [`commands::AppState::set_last_cfg`]'s.
-fn apply_config(
-    app: &tauri::AppHandle,
+fn apply_config<R: LectorRuntime>(
+    app: &AppHandle<R>,
     cfg: &lector_config::Config,
     warnings: &[lector_config::Warning],
 ) {
@@ -126,12 +130,12 @@ fn apply_config(
 /// default, or whatever `open_on_launch` overrides to). A popped-out tab is never picked: its
 /// webview label belongs to the detached window. A failure (e.g. the tab's dir doesn't exist yet)
 /// stays cold.
-fn show_first_tab(app: &tauri::AppHandle, label: &str) {
+fn show_first_tab<R: LectorRuntime>(app: &AppHandle<R>, label: &str) {
     let state = app.state::<commands::AppState>();
     let detached = state.detached_tab_labels();
     let startup = || {
         let title = app
-            .state::<WindowSet>()
+            .state::<R::Windows>()
             .entries()
             .into_iter()
             .find(|e| e.id == label)?
@@ -155,10 +159,10 @@ fn show_first_tab(app: &tauri::AppHandle, label: &str) {
 
 /// [`WindowHost::build`](shell_core::windows::WindowHost::build): build `slot`'s window and record
 /// its accent. Its tabs are shown by the caller once they resolve under its label.
-pub(crate) fn open_window(
-    app: &tauri::AppHandle,
+pub(crate) fn open_window<R: LectorRuntime>(
+    app: &AppHandle<R>,
     slot: &Slot,
-) -> tauri::Result<tauri::WebviewWindow> {
+) -> tauri::Result<tauri::WebviewWindow<R>> {
     let window = webviews::build_window(
         app,
         &slot.label,
@@ -177,21 +181,21 @@ pub(crate) fn open_window(
 /// with it (their servers stop at the next [`reload::reconcile`], which no longer sees them), and
 /// every other popped-out tab follows its origin's current label
 /// ([`commands::AppState::settle_detached`]).
-pub(crate) fn window_closed(app: &tauri::AppHandle) {
+pub(crate) fn window_closed<R: LectorRuntime>(app: &AppHandle<R>) {
     settle_detached(app);
     // During ⌘Q every window is being destroyed and the menu dies with the app.
-    if !app.state::<WindowSet>().is_quitting() {
-        refresh_menu(app);
+    if !app.state::<R::Windows>().is_quitting() {
+        R::refresh_menu(app);
     }
 }
 
 /// Destroy the popped-out windows whose origin left the config, and rehome the rest
 /// ([`commands::AppState::settle_detached`]). A closed origin is never destroyed, so a clean load
 /// runs this as well as [`window_closed`].
-fn settle_detached(app: &tauri::AppHandle) {
+fn settle_detached<R: LectorRuntime>(app: &AppHandle<R>) {
     let orphans = app
         .state::<commands::AppState>()
-        .settle_detached(&app.state::<WindowSet>().entries());
+        .settle_detached(&app.state::<R::Windows>().entries());
     if !orphans.is_empty() {
         for detached in orphans {
             if let Some(w) = app.get_window(&detached) {
@@ -206,7 +210,12 @@ fn settle_detached(app: &tauri::AppHandle) {
 /// under `label`, changed title or colour in place; carry it into `last_cfg` (so
 /// [`labelled_windows`] keeps the window before the reload echo) and into the origin titles of the
 /// tabs popped out of it, and repaint its banner.
-pub(crate) fn window_retitled(app: &tauri::AppHandle, label: &str, old: &str, decl: &WindowDecl) {
+pub(crate) fn window_retitled<R: LectorRuntime>(
+    app: &AppHandle<R>,
+    label: &str,
+    old: &str,
+    decl: &WindowDecl,
+) {
     let state = app.state::<commands::AppState>();
     state.retitle_origins(old, &decl.title);
     state.retitle_window(old, &decl.title, decl.colour.clone());
@@ -216,14 +225,14 @@ pub(crate) fn window_retitled(app: &tauri::AppHandle, label: &str, old: &str, de
 
 /// Mirror the popped-out window count into the [`WindowSet`], which keeps the home surface away
 /// while one is up.
-pub(crate) fn sync_detached(app: &tauri::AppHandle) {
+pub(crate) fn sync_detached<R: LectorRuntime>(app: &AppHandle<R>) {
     let count = app
         .state::<commands::AppState>()
         .detached
         .lock()
         .expect("detached lock")
         .len();
-    app.state::<WindowSet>().set_detached_count(app, count);
+    app.state::<R::Windows>().set_detached_count(app, count);
 }
 
 /// The `nav-tab` payload: step `dir` from `from`, a popped-out tab, or else from the highlight.
@@ -302,14 +311,14 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
 /// A reopen re-scans every root and may start servers (hundreds of ms), so the menu and home
 /// callers run this off the main thread; `redock` calls it inline because it needs the reopen
 /// finished before it drops the detached bookkeeping.
-fn open_or_focus_window(app: &tauri::AppHandle, label: &str) {
-    let was_open = app.get_window(label).is_some();
-    app.state::<WindowSet>().open_or_focus(app, label);
-    if !was_open && app.get_window(label).is_some() {
+fn open_or_focus_window<R: LectorRuntime>(app: &AppHandle<R>, label: &str) {
+    let was_open = R::live_window(app, label).is_some();
+    app.state::<R::Windows>().open_or_focus(app, label);
+    if !was_open && R::live_window(app, label).is_some() {
         sync_tabs(app);
         show_first_tab(app, label);
     }
-    refresh_menu(app);
+    R::refresh_menu(app);
 }
 
 /// Return a popped-out tab to its origin window when its detached window closes — the `on_close`
@@ -323,11 +332,11 @@ fn open_or_focus_window(app: &tauri::AppHandle, label: &str) {
 /// closed while the tab was out, [`open_or_focus_window`] reopens it while the tab is STILL in
 /// `AppState::detached` — so the reopen never picks the popped-out tab as its first tab. Only then
 /// is the bookkeeping removed and the webview recreated on the origin, which then becomes active.
-pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
+pub(crate) fn redock<R: LectorRuntime>(app: &AppHandle<R>, detached_label: &str) {
     // ⌘Q teardown: `RunEvent::ExitRequested` fires before every window's `Destroyed`. Don't reopen
     // an origin or recreate a webview mid-quit — everything is being torn down, and the servers are
     // about to be shut down wholesale anyway (see `run`'s `RunEvent::Exit` arm).
-    if app.state::<WindowSet>().is_quitting() {
+    if app.state::<R::Windows>().is_quitting() {
         return;
     }
     let state = app.state::<commands::AppState>();
@@ -335,7 +344,7 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
     // Find the origin by title and point the bookkeeping (and the tab's server) at its current
     // label, then peek the origin + tab + port without removing (see the doc comment's ordering
     // rationale). With no origin left in the config, the tab ends below like a removed one.
-    let home = state.resolve_origin(detached_label, &app.state::<WindowSet>().entries());
+    let home = state.resolve_origin(detached_label, &app.state::<R::Windows>().entries());
     let Some((origin_wid, tab_label, port)) = state
         .detached
         .lock()
@@ -394,9 +403,13 @@ pub(crate) fn redock(app: &tauri::AppHandle, detached_label: &str) {
 
 /// Load the config and apply it — the home surface's "Create a starter config" button, which turns
 /// a `NoConfig` state into a real config the app has never seen.
-pub(crate) fn reload_now(app: &tauri::AppHandle) {
-    let path = lector_config::resolve_config_path();
-    match lector_config::load_config(&path) {
+pub(crate) fn reload_now(app: &AppHandle) {
+    reload_from(app, &lector_config::resolve_config_path());
+}
+
+/// [`reload_now`] from the config at `path`.
+fn reload_from<R: LectorRuntime>(app: &AppHandle<R>, path: &std::path::Path) {
+    match lector_config::load_config(path) {
         Ok((cfg, warnings)) => apply_clean_load(app, &cfg, &warnings),
         Err(e) => eprintln!("config error: {e}"),
     }
@@ -407,14 +420,14 @@ pub(crate) fn reload_now(app: &tauri::AppHandle) {
 /// recolours kept ones (a window the user closed stays closed); then tab state is applied, each
 /// newly opened window shows its first tab, every chrome refreshes, and the app menu is rebuilt (so
 /// a `tab_digit_keys` flip and the Window submenu track the config).
-pub(crate) fn apply_clean_load(
-    app: &tauri::AppHandle,
+pub(crate) fn apply_clean_load<R: LectorRuntime>(
+    app: &AppHandle<R>,
     cfg: &lector_config::Config,
     warnings: &[lector_config::Warning],
 ) {
     app.state::<commands::AppState>().set_last_cfg(cfg.clone());
     let opened: Vec<String> = app
-        .state::<WindowSet>()
+        .state::<R::Windows>()
         .apply(app, windows::decls(cfg))
         .into_iter()
         .filter_map(|op| match op {
@@ -428,14 +441,14 @@ pub(crate) fn apply_clean_load(
         show_first_tab(app, label);
     }
     emit_to_all_chrome(app, ChromeEvent::ConfigReloaded, ());
-    refresh_menu(app);
+    R::refresh_menu(app);
 }
 
 /// Surface a config that failed to load: every chrome and the home surface show the error, and
 /// the last-good config (and every running server) is left untouched.
-pub(crate) fn surface_load_error(app: &tauri::AppHandle, msg: &str) {
+pub(crate) fn surface_load_error<R: LectorRuntime>(app: &AppHandle<R>, msg: &str) {
     emit_to_all_chrome(app, ChromeEvent::ConfigError, msg.to_string());
-    app.state::<WindowSet>()
+    app.state::<R::Windows>()
         .set_load_error(app, Some(msg.to_string()));
 }
 
@@ -444,7 +457,7 @@ pub(crate) fn surface_load_error(app: &tauri::AppHandle, msg: &str) {
 ///
 /// Rebuilt on every clean load (a `tab_digit_keys` flip applies without a relaunch) and whenever a
 /// window opens, closes, is renamed or deleted (the Window submenu's ticks and "(closed)" labels).
-fn refresh_menu(app: &tauri::AppHandle) {
+fn refresh_menu(app: &AppHandle) {
     let state = app.state::<commands::AppState>();
     let entries = app.state::<WindowSet>().entries();
     let built = shell_core::menu::build_spine(

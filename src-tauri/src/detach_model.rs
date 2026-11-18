@@ -461,7 +461,8 @@ fn the_fixture_reuses_a_freed_label() {
 fn lib_fn_body(name: &str) -> &'static str {
     const LIB_RS: &str = include_str!("lib.rs");
     let start = LIB_RS
-        .find(&format!("fn {name}("))
+        .find(&format!("fn {name}<"))
+        .or_else(|| LIB_RS.find(&format!("fn {name}(")))
         .unwrap_or_else(|| panic!("lib.rs defines {name}"));
     let body = &LIB_RS[start..];
     &body[..body.find("\n}\n").expect("the function closes")]

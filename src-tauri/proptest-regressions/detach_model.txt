@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 00f4f8d8772653988d31c698ecbd1fac80aba7c122cdbbffae623f7c67059ab2 # shrinks to (initial_state, transitions, seen_counter) = (Model { plan: Plan { titles: [], live: {} }, popped: {} }, [Add("a b", 0), Add("a-b", 0), PopOut("a-b", true), Close("a-b"), Close("a b"), Reopen("a-b")], None)

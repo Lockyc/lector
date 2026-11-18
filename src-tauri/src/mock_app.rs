@@ -103,28 +103,6 @@ impl MockSet {
         }
     }
 
-    /// `WindowSet::materialize`: a launch load opens the `open_on_start` windows.
-    pub fn materialize(&self, app: &AppHandle<MockRuntime>, decls: Vec<WindowDecl>) {
-        let effects = {
-            let mut st = self.lock();
-            st.launched = true;
-            st.decls = decls;
-            let slots: Vec<Slot> = st
-                .slots()
-                .into_iter()
-                .filter(|s| !s.open && s.decl.open_on_start)
-                .collect();
-            slots
-                .into_iter()
-                .map(|s| {
-                    st.open(&s);
-                    Effect::Build(s)
-                })
-                .collect()
-        };
-        self.perform(app, effects);
-    }
-
     /// The user closed `label`'s window: `WindowSet`'s close request (its pages end), then its
     /// `Destroyed`.
     pub fn user_close(&self, app: &AppHandle<MockRuntime>, label: &str) {

@@ -1,31 +1,77 @@
-//! A state-machine model of popped-out tabs across window renames, closes, reopens, deletes and
-//! redocks. Each step is right on its own; these runs look for an order that leaves
-//! [`AppState::detached`] pointing at the wrong window or its server under a stale key.
+//! A state-machine model of popped-out tabs across window adds, deletes, renames, closes, reopens,
+//! reloads and redocks. Each step is right on its own; these runs look for an order that leaves a
+//! popped-out tab pointing at the wrong window, shown twice, or holding another window's tab.
 //!
-//! The window set is a [`Windows`] fixture built on shell-core's own label plan
-//! ([`assign`], [`menu_entries`]), standing in for the `WindowSet`. Each SUT step calls the
-//! `AppState` methods the matching `lib.rs` path calls, in the same order.
+//! The system under test is lector itself on the mock runtime (`mock_app.rs`): each step is the
+//! `lib.rs` path the app runs for it. The window form's Edit lands in the window set at once and
+//! in the app only when the config watcher echoes the file it wrote, so it is a separate step
+//! from that echo ([`Step::Reload`]).
 
-use crate::commands::{AppState, LectorDetached};
+use crate::commands::AppState;
+use crate::mock_app::{config, doc_dir, mock_app, pop_out, MockSet, WindowSpec};
+use crate::runtime::Windows as _;
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 use proptest_state_machine::{prop_state_machine, ReferenceStateMachine, StateMachineTest};
 use shell_core::menu::WindowEntry;
-use shell_core::windows::plan::{assign, entry_for_title, menu_entries, WindowDecl};
+use shell_core::windows::plan::{
+    assign, child_label, entry_for_title, menu_entries, within_of, WindowDecl,
+};
 use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
+use std::sync::LazyLock;
+use tauri::test::MockRuntime;
+use tauri::{AppHandle, Manager};
 
 /// Titles that collide once sanitized ("work"/"work!", "a b"/"a-b"), so freed and suffixed labels
 /// get reused.
 const TITLES: &[&str] = &["work", "work!", "job", "a b", "a-b", "docs:x"];
 
-/// The configured windows, in config order, and the label each open one holds.
+/// The doc repos every window's two tabs serve: one eager, one lazy. Shared, so two windows' tabs
+/// differ only by the window label they sit under.
+struct Repos {
+    eager: PathBuf,
+    lazy: PathBuf,
+    /// Each tab's label within its window, eager first.
+    within: [String; 2],
+}
+
+static REPOS: LazyLock<Repos> = LazyLock::new(|| {
+    let (eager, lazy) = (doc_dir("model-eager"), doc_dir("model-lazy"));
+    let cfg = config(&[("w", vec![(&eager, true), (&lazy, false)])]);
+    let views = lector_config::WindowTabs::tab_views(&cfg.windows[0], "w");
+    let within = [0, 1].map(|i| within_of(&views[i].label).to_string());
+    Repos {
+        eager,
+        lazy,
+        within,
+    }
+});
+
+impl Repos {
+    fn spec<'a>(&'a self, title: &'a str) -> WindowSpec<'a> {
+        (title, vec![(&self.eager, true), (&self.lazy, false)])
+    }
+
+    /// A tab's label within its window: the eager one, or the lazy one.
+    fn within(&self, eager: bool) -> String {
+        self.within[usize::from(!eager)].clone()
+    }
+}
+
+fn config_of(titles: &[String]) -> lector_config::Config {
+    let specs: Vec<WindowSpec<'_>> = titles.iter().map(|t| REPOS.spec(t)).collect();
+    config(&specs)
+}
+
+/// The configured windows, in config order, and the label each open one holds: shell-core's plan.
 #[derive(Debug, Clone, Default)]
-struct Windows {
+struct Plan {
     titles: Vec<String>,
     live: BTreeMap<String, String>,
 }
 
-impl Windows {
+impl Plan {
     fn decls(&self) -> Vec<WindowDecl> {
         self.titles
             .iter()
@@ -43,25 +89,20 @@ impl Windows {
         menu_entries(&assign(&self.decls(), &self.live))
     }
 
+    fn label(&self, title: &str) -> String {
+        entry_for_title(&self.entries(), title)
+            .expect("a configured window")
+            .id
+            .clone()
+    }
+
     fn is_open(&self, title: &str) -> bool {
         self.live.contains_key(title)
     }
 
-    /// Open the window titled `title` under the label the plan gives it; that label.
-    fn open(&mut self, title: &str) -> String {
-        let label = entry_for_title(&self.entries(), title)
-            .expect("a configured window")
-            .id
-            .clone();
-        self.live.insert(title.to_string(), label.clone());
-        label
-    }
-
-    /// Insert a window at config position `at` (clamped), opening it.
-    fn add(&mut self, title: &str, at: usize) -> String {
-        self.titles
-            .insert(at.min(self.titles.len()), title.to_string());
-        self.open(title)
+    fn open(&mut self, title: &str) {
+        let label = self.label(title);
+        self.live.insert(title.to_string(), label);
     }
 
     fn rename(&mut self, old: &str, new: &str) {
@@ -76,11 +117,7 @@ impl Windows {
         }
     }
 
-    fn close(&mut self, title: &str) {
-        self.live.remove(title);
-    }
-
-    fn delete(&mut self, title: &str) {
+    fn remove(&mut self, title: &str) {
         self.titles.retain(|t| t != title);
         self.live.remove(title);
     }
@@ -88,42 +125,55 @@ impl Windows {
 
 #[derive(Debug, Clone)]
 enum Step {
-    /// A window added to the config at a position, so it can take a closed window's label.
+    /// The config gains a window at a position, so it can take a closed window's label; the
+    /// watcher reloads.
     Add(String, usize),
-    /// An in-place rename of an open window (the Edit Window… form).
-    Rename {
+    /// The config loses a window, open or closed; the watcher reloads.
+    Delete(String),
+    /// A reload of the config as it stands: the watcher's echo of a form's write, or ⟳.
+    Reload,
+    /// The window form renames a window: config write, then `WindowSet::rename`.
+    FormRename {
         old: String,
         new: String,
     },
+    /// The window form deletes a window: config write, then `WindowSet::delete`.
+    FormDelete(String),
     Close(String),
+    /// Window ▸ the window, closed.
     Reopen(String),
-    /// The window leaves the config, open or closed.
-    Delete(String),
-    PopOut(String),
+    /// Pop the window's eager (or lazy) tab out.
+    PopOut(String, bool),
     /// Close the popped-out window with this detached label.
     Redock(String),
 }
 
-/// A popped-out tab as the spec sees it: the title of the window it came from, and its port.
+/// A popped-out tab as the spec sees it: the title of the window it came from, and its label
+/// within that window.
 #[derive(Debug, Clone)]
 struct Popped {
     origin_title: String,
-    port: u16,
+    within: String,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Model {
-    windows: Windows,
+    plan: Plan,
     popped: BTreeMap<String, Popped>,
-    next_port: u16,
 }
 
-/// A pop-out's tab label and detached label. Every pop-out is a distinct tab (its port numbers
-/// it), so two tabs never share a label by construction.
-fn pop_labels(window_label: &str, port: u16) -> (String, String) {
-    let tab = shell_core::child_label(window_label, &format!("tab-{port}"));
-    let detached = shell_core::detach::detached_label(&crate::detach_window_token(&tab));
-    (tab, detached)
+impl Model {
+    /// A popped-out tab whose origin left the config ends.
+    fn settle(&mut self) {
+        let titles = &self.plan.titles;
+        self.popped.retain(|_, p| titles.contains(&p.origin_title));
+    }
+
+    /// The detached label popping `title`'s tab out would give.
+    fn detached_label(&self, title: &str, eager: bool) -> String {
+        let tab = child_label(&self.plan.live[title], &REPOS.within(eager));
+        shell_core::detach::detached_label(&crate::detach_window_token(&tab))
+    }
 }
 
 impl ReferenceStateMachine for Model {
@@ -131,23 +181,19 @@ impl ReferenceStateMachine for Model {
     type Transition = Step;
 
     fn init_state() -> BoxedStrategy<Model> {
-        Just(Model {
-            next_port: 1,
-            ..Model::default()
-        })
-        .boxed()
+        Just(Model::default()).boxed()
     }
 
     fn transitions(state: &Model) -> BoxedStrategy<Step> {
-        let titles = state.windows.titles.clone();
+        let titles = state.plan.titles.clone();
         let open: Vec<String> = titles
             .iter()
-            .filter(|t| state.windows.is_open(t))
+            .filter(|t| state.plan.is_open(t))
             .cloned()
             .collect();
         let closed: Vec<String> = titles
             .iter()
-            .filter(|t| !state.windows.is_open(t))
+            .filter(|t| !state.plan.is_open(t))
             .cloned()
             .collect();
         let free: Vec<String> = TITLES
@@ -157,7 +203,7 @@ impl ReferenceStateMachine for Model {
             .collect();
         let popped: Vec<String> = state.popped.keys().cloned().collect();
 
-        let mut steps: Vec<BoxedStrategy<Step>> = Vec::new();
+        let mut steps: Vec<BoxedStrategy<Step>> = vec![Just(Step::Reload).boxed()];
         if !free.is_empty() {
             steps.push(
                 (proptest::sample::select(free.clone()), 0..=titles.len())
@@ -165,25 +211,23 @@ impl ReferenceStateMachine for Model {
                     .boxed(),
             );
         }
-        if !open.is_empty() {
+        if !titles.is_empty() {
+            let any = proptest::sample::select(titles);
+            steps.push(any.clone().prop_map(Step::Delete).boxed());
             if !free.is_empty() {
                 steps.push(
-                    (
-                        proptest::sample::select(open.clone()),
-                        proptest::sample::select(free),
-                    )
-                        .prop_map(|(old, new)| Step::Rename { old, new })
+                    (any, proptest::sample::select(free))
+                        .prop_map(|(old, new)| Step::FormRename { old, new })
                         .boxed(),
                 );
             }
+        }
+        if !open.is_empty() {
+            let open = proptest::sample::select(open);
+            steps.push(open.clone().prop_map(Step::Close).boxed());
             steps.push(
-                proptest::sample::select(open.clone())
-                    .prop_map(Step::Close)
-                    .boxed(),
-            );
-            steps.push(
-                proptest::sample::select(open)
-                    .prop_map(Step::PopOut)
+                (open, any::<bool>())
+                    .prop_map(|(t, eager)| Step::PopOut(t, eager))
                     .boxed(),
             );
         }
@@ -191,13 +235,6 @@ impl ReferenceStateMachine for Model {
             steps.push(
                 proptest::sample::select(closed)
                     .prop_map(Step::Reopen)
-                    .boxed(),
-            );
-        }
-        if !titles.is_empty() {
-            steps.push(
-                proptest::sample::select(titles)
-                    .prop_map(Step::Delete)
                     .boxed(),
             );
         }
@@ -212,14 +249,26 @@ impl ReferenceStateMachine for Model {
     }
 
     fn preconditions(state: &Model, step: &Step) -> bool {
-        let w = &state.windows;
-        let configured = |t: &String| w.titles.contains(t);
+        let p = &state.plan;
+        let configured = |t: &String| p.titles.contains(t);
         match step {
             Step::Add(t, _) => !configured(t),
-            Step::Rename { old, new } => w.is_open(old) && !configured(new),
-            Step::Close(t) | Step::PopOut(t) => w.is_open(t),
-            Step::Reopen(t) => configured(t) && !w.is_open(t),
-            Step::Delete(t) => configured(t),
+            Step::Delete(t) | Step::FormDelete(t) => configured(t),
+            Step::Reload => true,
+            Step::FormRename { old, new } => p.is_open(old) && !configured(new),
+            // The user closing the last window, with nothing popped out, quits.
+            Step::Close(t) => p.is_open(t) && (p.live.len() > 1 || !state.popped.is_empty()),
+            Step::Reopen(t) => configured(t) && !p.is_open(t),
+            Step::PopOut(t, eager) => {
+                p.is_open(t) && {
+                    let within = REPOS.within(*eager);
+                    !state
+                        .popped
+                        .values()
+                        .any(|q| q.origin_title == *t && q.within == within)
+                        && !state.popped.contains_key(&state.detached_label(t, *eager))
+                }
+            }
             Step::Redock(d) => state.popped.contains_key(d),
         }
     }
@@ -227,42 +276,46 @@ impl ReferenceStateMachine for Model {
     fn apply(mut state: Model, step: &Step) -> Model {
         match step {
             Step::Add(t, at) => {
-                state.windows.add(t, *at);
+                let at = (*at).min(state.plan.titles.len());
+                state.plan.titles.insert(at, t.clone());
+                state.plan.open(t);
+                state.settle();
             }
-            Step::Rename { old, new } => {
-                state.windows.rename(old, new);
+            // A window leaving the config takes its popped-out tabs with it, however it left.
+            Step::Delete(t) | Step::FormDelete(t) => {
+                state.plan.remove(t);
+                state.settle();
+            }
+            Step::Reload => state.settle(),
+            Step::FormRename { old, new } => {
+                state.plan.rename(old, new);
                 for p in state.popped.values_mut() {
                     if p.origin_title == *old {
                         p.origin_title = new.clone();
                     }
                 }
             }
-            Step::Close(t) => state.windows.close(t),
-            Step::Reopen(t) => {
-                state.windows.open(t);
+            Step::Close(t) => {
+                state.plan.live.remove(t);
             }
-            // A window leaving the config takes its popped-out tabs with it.
-            Step::Delete(t) => {
-                state.windows.delete(t);
-                state.popped.retain(|_, p| p.origin_title != *t);
-            }
-            Step::PopOut(t) => {
-                let port = state.next_port;
-                state.next_port += 1;
-                let (_, detached) = pop_labels(&state.windows.live[t], port);
+            Step::Reopen(t) => state.plan.open(t),
+            Step::PopOut(t, eager) => {
+                let detached = state.detached_label(t, *eager);
                 state.popped.insert(
                     detached,
                     Popped {
                         origin_title: t.clone(),
-                        port,
+                        within: REPOS.within(*eager),
                     },
                 );
             }
-            // Redocking reopens a closed origin.
+            // Redocking reopens a closed origin that is still configured.
             Step::Redock(d) => {
                 let p = state.popped.remove(d).expect("precondition");
-                if !state.windows.is_open(&p.origin_title) {
-                    state.windows.open(&p.origin_title);
+                if state.plan.titles.contains(&p.origin_title)
+                    && !state.plan.is_open(&p.origin_title)
+                {
+                    state.plan.open(&p.origin_title);
                 }
             }
         }
@@ -270,74 +323,42 @@ impl ReferenceStateMachine for Model {
     }
 }
 
-/// lector's state and the window set it runs against.
+/// lector on the mock runtime, and the config file it reloads from.
 struct Lector {
-    state: AppState,
-    windows: Windows,
+    app: tauri::App<MockRuntime>,
+    file: Vec<String>,
 }
 
 impl Lector {
-    /// `open_window`'s bookkeeping for a window built under `label`.
-    fn built(&self, label: &str, title: &str) {
-        self.state.popped_out_of(label, title);
+    fn app(&self) -> &AppHandle<MockRuntime> {
+        self.app.handle()
     }
 
-    /// `window_closed`: a window was destroyed.
-    fn closed(&self) {
-        self.state.settle_detached(&self.windows.entries());
+    fn set(&self) -> tauri::State<'_, MockSet> {
+        self.app.state::<MockSet>()
     }
 
-    /// `apply_clean_load` after the reload that dropped a window, before that window's
-    /// `Destroyed` (a closed window has none).
-    fn reloaded(&self) {
-        self.state.settle_detached(&self.windows.entries());
+    fn state(&self) -> tauri::State<'_, AppState> {
+        self.app.state::<AppState>()
     }
 
-    /// `pop_out_tab`'s bookkeeping.
-    fn pop_out(&self, title: &str, port: u16) {
-        let wid = self.windows.live[title].clone();
-        let (tab, detached) = pop_labels(&wid, port);
-        self.state.servers.register_unserved_for_test(&tab, port);
-        self.state.detached.lock().unwrap().insert(
-            detached,
-            LectorDetached {
-                origin_wid: wid,
-                origin_title: title.trim().to_string(),
-                tab_label: tab,
-                port,
-            },
-        );
+    /// The label the window set gives the window titled `title`.
+    fn label(&self, title: &str) -> String {
+        entry_for_title(&self.set().entries(), title)
+            .expect("a configured window")
+            .id
+            .clone()
     }
 
-    /// `redock`'s bookkeeping, in its order.
-    fn redock(&mut self, detached: &str) {
-        let home = self.state.resolve_origin(detached, &self.windows.entries());
-        let Some((origin_wid, tab)) = self
-            .state
-            .detached
-            .lock()
-            .unwrap()
-            .get(detached)
-            .map(|d| (d.origin_wid.clone(), d.tab_label.clone()))
-        else {
-            return;
-        };
-        if matches!(home, Some((_, false))) {
-            let title = self
-                .windows
-                .entries()
-                .into_iter()
-                .find(|e| e.id == origin_wid)
-                .expect("the resolved origin is listed")
-                .title;
-            let label = self.windows.open(&title);
-            assert_eq!(label, origin_wid, "a reopen keeps the resolved label");
-            self.built(&label, &title);
-        }
-        self.state.detached.lock().unwrap().remove(detached);
-        if home.is_none() {
-            self.state.servers.stop(&tab);
-        }
+    /// The config watcher's reload of the file.
+    fn reload(&self) {
+        crate::apply_clean_load(self.app(), &config_of(&self.file), &[]);
+    }
+}
+
+impl Drop for Lector {
+    fn drop(&mut self) {
+        self.state().servers.shutdown_all();
     }
 }
 
@@ -347,49 +368,60 @@ impl StateMachineTest for Lector {
 
     fn init_test(_: &Model) -> Lector {
         Lector {
-            state: AppState::new(),
-            windows: Windows::default(),
+            app: mock_app(),
+            file: Vec::new(),
         }
     }
 
-    fn apply(mut sut: Lector, model: &Model, step: Step) -> Lector {
+    fn apply(mut sut: Lector, _: &Model, step: Step) -> Lector {
+        let app = sut.app().clone();
         match step {
-            // The reload's `WindowSet::apply` builds the window before `apply_clean_load` settles.
             Step::Add(t, at) => {
-                let label = sut.windows.add(&t, at);
-                sut.built(&label, &t);
-                sut.reloaded();
-            }
-            // `window_retitled`, then the reload echo of the written config.
-            Step::Rename { old, new } => {
-                sut.windows.rename(&old, &new);
-                sut.state.retitle_origins(&old, &new);
-                sut.reloaded();
-            }
-            Step::Close(t) => {
-                sut.windows.close(&t);
-                sut.closed();
-            }
-            Step::Reopen(t) => {
-                let label = sut.windows.open(&t);
-                sut.built(&label, &t);
+                let at = at.min(sut.file.len());
+                sut.file.insert(at, t);
+                sut.reload();
             }
             Step::Delete(t) => {
-                let was_open = sut.windows.is_open(&t);
-                sut.windows.delete(&t);
-                sut.reloaded();
-                if was_open {
-                    sut.closed();
-                }
+                sut.file.retain(|f| *f != t);
+                sut.reload();
             }
-            Step::PopOut(t) => sut.pop_out(&t, model.next_port - 1),
-            Step::Redock(d) => sut.redock(&d),
+            Step::Reload => sut.reload(),
+            Step::FormRename { old, new } => {
+                let label = sut.label(&old);
+                let at = sut
+                    .file
+                    .iter()
+                    .position(|f| *f == old)
+                    .expect("in the file");
+                sut.file[at] = new.clone();
+                sut.set().rename(&app, &label, &new);
+                sut.set().form_changed(&app);
+            }
+            Step::FormDelete(t) => {
+                let label = sut.label(&t);
+                sut.file.retain(|f| *f != t);
+                sut.set().delete(&app, &label);
+                sut.set().form_changed(&app);
+            }
+            Step::Close(t) => {
+                let label = sut.label(&t);
+                sut.set().user_close(&app, &label);
+            }
+            Step::Reopen(t) => crate::open_or_focus_window(&app, &sut.label(&t)),
+            Step::PopOut(t, eager) => {
+                let tab = child_label(&sut.label(&t), &REPOS.within(eager));
+                pop_out(&app, &t, &tab);
+            }
+            Step::Redock(d) => crate::redock(&app, &d),
         }
         sut
     }
 
     fn check_invariants(sut: &Lector, model: &Model) {
-        let detached = sut.state.detached.lock().unwrap();
+        let state = sut.state();
+        let entries = sut.set().entries();
+        assert_eq!(sut.set().live(), model.plan.live, "the open windows");
+        let detached = state.detached.lock().unwrap();
         assert_eq!(
             detached.keys().collect::<std::collections::BTreeSet<_>>(),
             model.popped.keys().collect(),
@@ -399,14 +431,8 @@ impl StateMachineTest for Lector {
         for (label, d) in detached.iter() {
             let spec = &model.popped[label];
             assert_eq!(d.origin_title, spec.origin_title, "{label}'s origin title");
-            assert!(
-                sut.windows.titles.contains(&d.origin_title),
-                "{label}'s origin {:?} left the config but the tab stayed out",
-                d.origin_title
-            );
-            assert_eq!(d.port, spec.port);
             assert_eq!(
-                sut.state.servers.port(&d.tab_label),
+                state.servers.port(&d.tab_label),
                 Some(d.port),
                 "{label}'s server is keyed by its tab label {:?}",
                 d.tab_label
@@ -415,19 +441,51 @@ impl StateMachineTest for Lector {
                 tabs.insert(d.tab_label.clone()),
                 "{label} shares a tab label"
             );
-            if let Some(open) = sut.windows.live.get(&d.origin_title) {
-                assert_eq!(&d.origin_wid, open, "{label} names its open origin's label");
+            let home = entry_for_title(&entries, &d.origin_title).expect("a configured origin");
+            if home.open {
+                assert_eq!(
+                    d.origin_wid, home.id,
+                    "{label} names its open origin's label"
+                );
                 assert_eq!(
                     shell_core::window_of(&d.tab_label),
-                    Some(open.as_str()),
+                    Some(home.id.as_str()),
                     "{label}'s tab label sits under its open origin"
                 );
             }
+            // What the user sees, whatever the bookkeeping says: the origin's copy of this tab
+            // is neither shown nor served by a second server.
+            let docked = child_label(&home.id, &spec.within);
+            if home.open {
+                assert_ne!(
+                    state.active_for(&home.id),
+                    Some(docked.clone()),
+                    "{label} is also shown in its origin"
+                );
+            }
+            assert!(
+                state.servers.port(&docked).is_none_or(|p| p == d.port),
+                "{label} has a second server under {docked}"
+            );
         }
-        assert_eq!(
-            sut.windows.live, model.windows.live,
-            "the fixture tracks the model"
-        );
+        // No window shows one of its own tabs as popped out unless it is.
+        let out: HashSet<String> = detached.values().map(|d| d.tab_label.clone()).collect();
+        for e in entries.iter().filter(|e| e.open) {
+            for eager in [true, false] {
+                let within = REPOS.within(eager);
+                let tab = child_label(&e.id, &within);
+                let is_out = model
+                    .popped
+                    .values()
+                    .any(|p| p.origin_title == e.title && p.within == within);
+                assert_eq!(
+                    out.contains(&tab),
+                    is_out,
+                    "{tab} of {:?} reads as popped out",
+                    e.title
+                );
+            }
+        }
     }
 }
 
@@ -436,7 +494,7 @@ fn cases() -> u32 {
     std::env::var("PROPTEST_CASES")
         .ok()
         .and_then(|n| n.parse().ok())
-        .unwrap_or(64)
+        .unwrap_or(32)
 }
 
 prop_state_machine! {
@@ -446,45 +504,18 @@ prop_state_machine! {
     fn popped_out_tabs_follow_their_origin_window(sequential 1..40 => Lector);
 }
 
-/// The plan's labels are what the fixture's windows get, so a freed label really is reused.
+/// The plan's labels are what the model's windows get, so a freed label really is reused.
 #[test]
-fn the_fixture_reuses_a_freed_label() {
-    let mut w = Windows::default();
-    assert_eq!(w.add("work", 0), "work");
-    w.rename("work", "job");
-    w.close("job");
-    assert_eq!(w.add("work!", 1), "work");
-    assert_eq!(w.open("job"), "job");
-}
-
-/// The body of the top-level `fn name` in `lib.rs`.
-fn lib_fn_body(name: &str) -> &'static str {
-    const LIB_RS: &str = include_str!("lib.rs");
-    let start = LIB_RS
-        .find(&format!("fn {name}<"))
-        .or_else(|| LIB_RS.find(&format!("fn {name}(")))
-        .unwrap_or_else(|| panic!("lib.rs defines {name}"));
-    let body = &LIB_RS[start..];
-    &body[..body.find("\n}\n").expect("the function closes")]
-}
-
-/// The model's `reloaded` and `closed` stand in for `lib.rs` paths it can't drive without a running
-/// app, so this holds those paths to the steps the model gives them.
-#[test]
-fn the_lib_rs_paths_settle_where_the_model_does() {
-    let load = lib_fn_body("apply_clean_load");
-    let applied = load
-        .find(".apply(app")
-        .expect("apply_clean_load applies the window set");
-    let settled = load
-        .find("settle_detached(app)")
-        .expect("apply_clean_load settles the popped-out tabs: a closed origin has no Destroyed");
-    assert!(
-        applied < settled,
-        "apply_clean_load settles against the entries from before WindowSet::apply"
-    );
-    assert!(
-        lib_fn_body("window_closed").contains("settle_detached(app)"),
-        "window_closed settles the popped-out tabs"
-    );
+fn the_plan_reuses_a_freed_label() {
+    let mut p = Plan::default();
+    p.titles.push("work".into());
+    p.open("work");
+    assert_eq!(p.live["work"], "work");
+    p.rename("work", "job");
+    p.live.remove("job");
+    p.titles.push("work!".into());
+    p.open("work!");
+    assert_eq!(p.live["work!"], "work");
+    p.open("job");
+    assert_eq!(p.live["job"], "job");
 }

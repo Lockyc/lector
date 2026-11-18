@@ -47,3 +47,5 @@ tauri-plugin-process = "2"
 [dev-dependencies]
 proptest = "=1.12.0"
 proptest-state-machine = "=0.9.0"
+# `test`: MockRuntime, which the load-path tests in lib.rs and the detach model drive (mock_app.rs).
+tauri = { version = "2", features = ["unstable", "test"] }

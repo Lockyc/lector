@@ -12,6 +12,8 @@ mod contract;
 #[cfg(test)]
 mod detach_model;
 mod events;
+#[cfg(test)]
+mod mock_app;
 mod reload;
 mod runtime;
 mod servers;
@@ -734,5 +736,140 @@ mod tests {
         );
         // A real (config-defined) window label is never mistaken for a detached one.
         assert!(!shell_core::detach::is_detached_label(tab_label));
+    }
+
+    use crate::mock_app::{config, config_toml, doc_dir, mock_app, pop_out, tab_label, MockSet};
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
+    use tauri::test::MockRuntime;
+    use tauri::Listener;
+
+    /// The labels of the windows whose chrome received `event`, in arrival order.
+    fn chrome_hears(
+        app: &AppHandle<MockRuntime>,
+        labels: &[&str],
+        event: ChromeEvent,
+    ) -> Arc<Mutex<Vec<String>>> {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        for label in labels {
+            let chrome = app.get_webview(label).expect("the window's chrome");
+            let (heard, label) = (heard.clone(), label.to_string());
+            // chrome.js binds its listeners to its own webview, like this.
+            chrome.listen(event.name(), move |_| {
+                heard.lock().unwrap().push(label.clone())
+            });
+        }
+        heard
+    }
+
+    #[test]
+    fn reload_now_after_a_first_run_reaches_every_window_built_from_the_starter_config() {
+        let app = mock_app();
+        let app = app.handle();
+        let dir = doc_dir("first-run");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, config_toml(&[("Docs", vec![]), ("Notes", vec![])])).unwrap();
+
+        reload_from(app, &path);
+        assert_eq!(open_labels(app), ["Docs", "Notes"]);
+
+        let heard = chrome_hears(app, &["Docs", "Notes"], ChromeEvent::ConfigError);
+        surface_load_error(app, "line 3: bad");
+        let mut heard = heard.lock().unwrap().clone();
+        heard.sort();
+        assert_eq!(
+            heard,
+            ["Docs", "Notes"],
+            "every built window hears the error"
+        );
+        assert_eq!(
+            app.state::<MockSet>().load_error.lock().unwrap().as_deref(),
+            Some("line 3: bad")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_window_added_mid_session_is_built_and_shows_its_first_tab() {
+        let app = mock_app();
+        let app = app.handle();
+        let dir = doc_dir("added");
+        apply_clean_load(app, &config(&[("A", vec![])]), &[]);
+        let menus = app.state::<MockSet>().menus.load(Ordering::Relaxed);
+
+        apply_clean_load(
+            app,
+            &config(&[("A", vec![]), ("B", vec![(&dir, true)])]),
+            &[],
+        );
+
+        let state = app.state::<commands::AppState>();
+        let tab = tab_label(&state, "B", &dir);
+        assert!(app.get_window("B").is_some(), "the added window is built");
+        assert_eq!(state.active_for("B").as_deref(), Some(tab.as_str()));
+        assert!(
+            app.get_webview(&tab).is_some(),
+            "its first tab is on screen"
+        );
+        assert!(
+            app.state::<MockSet>().menus.load(Ordering::Relaxed) > menus,
+            "the menu is rebuilt"
+        );
+        state.servers.shutdown_all();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_reload_that_drops_a_window_closes_it_and_ends_its_popped_out_tabs() {
+        for close_first in [false, true] {
+            let app = mock_app();
+            let app = app.handle();
+            let dir = doc_dir(&format!("dropped-{close_first}"));
+            let both = config(&[("A", vec![(&dir, true)]), ("B", vec![(&dir, true)])]);
+            apply_clean_load(app, &both, &[]);
+            let state = app.state::<commands::AppState>();
+            let (kept, out) = (tab_label(&state, "A", &dir), tab_label(&state, "B", &dir));
+            pop_out(app, "B", &out);
+            if close_first {
+                app.state::<MockSet>().user_close(app, "B");
+            }
+
+            apply_clean_load(app, &config(&[("A", vec![(&dir, true)])]), &[]);
+
+            assert_eq!(open_labels(app), ["A"], "close_first={close_first}");
+            assert!(
+                state.detached.lock().unwrap().is_empty(),
+                "close_first={close_first}: B's popped-out tab ended with it"
+            );
+            assert_eq!(state.servers.port(&out), None, "and its server stopped");
+            assert!(state.servers.is_alive(&kept));
+            state.servers.shutdown_all();
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn a_reopened_window_shows_the_tab_it_had_active() {
+        let app = mock_app();
+        let app = app.handle();
+        let (first, second) = (doc_dir("reopen-1"), doc_dir("reopen-2"));
+        apply_clean_load(
+            app,
+            &config(&[("A", vec![(&first, true), (&second, false)])]),
+            &[],
+        );
+        let state = app.state::<commands::AppState>();
+        let tab = tab_label(&state, "A", &second);
+        commands::select(app, &state, &tab).unwrap();
+        app.state::<MockSet>().user_close(app, "A");
+        assert!(app.get_webview(&tab).is_none(), "closing ended its page");
+
+        open_or_focus_window(app, "A");
+
+        assert_eq!(state.active_for("A").as_deref(), Some(tab.as_str()));
+        assert!(app.get_webview(&tab).is_some(), "the active tab is back");
+        state.servers.shutdown_all();
+        std::fs::remove_dir_all(&first).ok();
+        std::fs::remove_dir_all(&second).ok();
     }
 }

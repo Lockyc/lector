@@ -22,8 +22,9 @@ updates the page immediately — no build step, no deploy, nothing published.
 [latest release](https://github.com/lockyc/lector/releases/latest), unzip, and move `lector.app`
 to `/Applications`. Releases are signed and notarized.
 
-**Or build from source** into `~/.lector` (needs Rust and the Xcode Command Line Tools); this also
-seeds your config, and re-running it rebuilds from the latest source:
+**Or build from source** (needs Rust and the Xcode Command Line Tools). The installer keeps its
+source clone in `~/.lector`, installs `/Applications/lector.app` and seeds your config; re-run it
+to rebuild from the latest source:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lockyc/lector/main/install.sh | bash

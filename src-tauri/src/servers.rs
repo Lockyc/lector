@@ -235,9 +235,8 @@ mod tests {
     /// A doc repo with `n` pages, each carrying a few fenced code blocks. Real build cost is
     /// dominated by markdown/syntax-highlight rendering per page, so this is what makes a
     /// scratch repo's build take a non-trivial, roughly-linear-in-`n` amount of wall time
-    /// instead of the sub-millisecond `scratch()` above. Calibrated on this machine (debug
-    /// build): 5 pages ~184ms, 8 pages ~292ms — see `start_does_not_stall_other_calls_during_a_cold_build`
-    /// for why that matters.
+    /// instead of the sub-millisecond `scratch()` above — see
+    /// `start_does_not_stall_other_calls_during_a_cold_build` for why that matters.
     fn scratch_big(name: &str, n: usize) -> std::path::PathBuf {
         let dir =
             std::env::temp_dir().join(format!("lector-srv-big-{}-{name}", std::process::id()));
@@ -381,24 +380,15 @@ mod tests {
 
     #[test]
     fn start_does_not_stall_other_calls_during_a_cold_build() {
-        // Regression test for the fix: `start()` must build *outside* the registry lock, so
-        // another tab's `is_live`/`port` never blocks behind one tab's cold start. Before the
-        // fix, `start()` held the lock across `compositor::serve_handle`, which walks and
-        // renders the whole docs tree (measured 161-454ms on real doc repos — see servers.rs's
-        // `start` doc comment). `scratch_big` reproduces that cost synthetically (calibrated
-        // ~292ms for 8 pages on this machine, in the same ballpark as the real measurements) so
-        // this test doesn't depend on checking out an unrelated sibling repo to get a slow build.
+        // Pins that `start()` builds *outside* the registry lock, so another tab's
+        // `is_live`/`port` never blocks behind one tab's cold start (`compositor::serve_handle`
+        // walks and renders the whole docs tree — see `start`'s doc comment). `scratch_big`
+        // makes that build slow synthetically, so the test needs no real docs repo.
         //
-        // The bound below is a *ratio* of probe latency to the build's own measured duration in
-        // this same run — not an absolute millisecond figure. An absolute bound (e.g. "a probe
-        // must take <50ms") is what shipped here originally, and it flaked under machine load:
-        // this box routinely sits at load average 90-260, and at that load even a perfectly
-        // healthy, uncontended probe can be descheduled past any fixed small bound — the test
-        // was measuring the machine's scheduler, not `start()`'s locking. Load inflates both the
-        // build's wall-clock duration and an occasionally-descheduled probe by roughly the same
-        // factor, so their *ratio* stays stable across load while either one's absolute value
-        // does not. Do not "fix" a flake here by reverting to an absolute bound — that
-        // reintroduces exactly the failure this rewrite removes.
+        // **Footgun:** the bound is a *ratio* of probe latency to the build's own duration in
+        // this run, never an absolute millisecond figure. Machine load stretches both the build
+        // and a descheduled probe by about the same factor, so the ratio holds where any fixed
+        // small bound would measure the scheduler, not `start()`'s locking.
         let big = scratch_big("stall", 8);
         let other = scratch("stall-other");
         let s = std::sync::Arc::new(Servers::new());

@@ -280,7 +280,7 @@ const CONFIG_DIR: &str = "lector";
 
 /// Config path to load at launch: `$LECTOR_CONFIG` if set and non-empty, else
 /// [`default_config_path`]. Shared with warden and curator via config-core — including the
-/// set-but-empty fall-through, which this app previously got wrong.
+/// set-but-empty fall-through.
 ///
 /// The env override lets `just run` point at the repo's `examples/config.toml` so iterating on
 /// lector never touches the developer's real `~/.config/lector/config.toml`.
@@ -879,9 +879,8 @@ title = "Docs"
 
     #[test]
     fn a_set_but_empty_env_var_falls_through_to_the_default() {
-        // lector shipped the bug this fixes: `var_os(..).map(PathBuf::from)` turned an empty
-        // LECTOR_CONFIG into PathBuf::from(""), whose only symptom was
-        // "cannot read config: No such file or directory".
+        // An empty LECTOR_CONFIG falls through to the default, never PathBuf::from(""), whose only
+        // symptom would be "cannot read config: No such file or directory".
         std::env::set_var("LECTOR_CONFIG", "");
         assert_eq!(resolve_config_path(), default_config_path());
         std::env::remove_var("LECTOR_CONFIG");

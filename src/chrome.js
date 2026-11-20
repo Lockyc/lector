@@ -286,7 +286,7 @@ listen("pointer-away", () => {
 });
 
 // Menu "Check for Updates…" → chrome-core checks now + announces (up-to-date / error / a banner).
-// lib.rs emits this; without the forward the menu item did nothing.
+// lib.rs emits this; the menu item does nothing without this forward.
 listen("check-update", () => {
   if (sb) sb.checkForUpdateNow();
 });

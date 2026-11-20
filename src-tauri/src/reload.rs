@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn reconcile_keeps_a_detached_tabs_server_alive_when_its_config_entry_vanishes() {
-        // The bug this fixes: a popped-out tab's server must survive a reconcile whose new config
+        // A popped-out tab's server must survive a reconcile whose new config
         // no longer has that tab's label, because the tab's content webview is still live in its
         // detached window, still being served from that port. Only `redock`'s tab-removed branch
         // is allowed to stop it, once the tab actually comes home to find no config slot.

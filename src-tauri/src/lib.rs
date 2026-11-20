@@ -96,7 +96,7 @@ fn sync_tabs<R: LectorRuntime>(app: &AppHandle<R>) {
         };
         for wv in win.webviews() {
             if wv.label() != win.label() && !keep.contains(wv.label()) {
-                let _ = wv.close();
+                R::close_content(&wv);
             }
         }
     }

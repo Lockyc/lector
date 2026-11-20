@@ -273,6 +273,10 @@ impl LectorRuntime for MockRuntime {
 
     fn decorate_content(_webview: &Webview<Self>, _accent: (f64, f64, f64, f64)) {}
 
+    fn close_content(webview: &Webview<Self>) {
+        let _ = webview.close();
+    }
+
     fn refresh_menu(app: &AppHandle<Self>) {
         app.state::<MockSet>().menus.fetch_add(1, Ordering::Relaxed);
     }

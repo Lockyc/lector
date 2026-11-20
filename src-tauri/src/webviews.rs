@@ -184,7 +184,7 @@ fn show_in<R: LectorRuntime>(window: &Window<R>, label: &str, port: u16) -> Resu
         .is_some_and(|wv| is_on_port(wv.url().ok().as_ref(), port));
     if !reuse {
         if let Some(stale) = existing {
-            stale.close().map_err(|e| e.to_string())?;
+            R::close_content(&stale);
         }
 
         let hole = hole_for(window.label());
@@ -259,13 +259,13 @@ pub fn seed_hole(window_label: &str, hole: HoleRect) {
 /// window. No-op if it was never created (an unload of a tab that was never selected). Used by
 /// `unload_tab` so a cold tab doesn't strand a dead-connection page on screen — without this, closing
 /// the server but leaving the webview up shows a broken page instead of the app's empty state.
-pub fn close<R: Runtime>(app: &AppHandle<R>, label: &str) {
+pub fn close<R: LectorRuntime>(app: &AppHandle<R>, label: &str) {
     let window_id = window_of(label).unwrap_or_default();
     let Some(window) = app.get_window(window_id) else {
         return;
     };
     if let Some(wv) = window.get_webview(label) {
-        let _ = wv.close();
+        R::close_content(&wv);
     }
 }
 

@@ -29,6 +29,10 @@ pub(crate) trait LectorRuntime: tauri::Runtime {
     /// and its pointer watch.
     fn decorate_content(webview: &Webview<Self>, accent: (f64, f64, f64, f64));
 
+    /// Close a content webview so its page stops: a bare `close()` leaves wry's WKWebView, and
+    /// the page in its WebContent process, running.
+    fn close_content(webview: &Webview<Self>);
+
     /// Rebuild the app menu from the current state ([`crate::refresh_menu`]).
     fn refresh_menu(app: &AppHandle<Self>);
 }
@@ -88,6 +92,10 @@ impl LectorRuntime for Wry {
         shell_core::progress_bar::install(webview, accent);
         // The page composites over the chrome, which can't see the pointer leave for it.
         shell_core::web::pointer::watch(webview);
+    }
+
+    fn close_content(webview: &Webview) {
+        shell_core::web::content::close_content_webview(webview);
     }
 
     fn refresh_menu(app: &AppHandle) {

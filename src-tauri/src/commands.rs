@@ -180,6 +180,25 @@ pub struct AppState {
     /// reconcile never touches these ephemeral windows; their count is mirrored into it
     /// (`crate::sync_detached`) — a detached window is a real surface on screen.
     pub detached: Mutex<HashMap<String, LectorDetached>>,
+    /// Tab labels a `pop_out_tab` call is between its guard and its `detached` insert
+    /// ([`AppState::reserve_pop_out`]).
+    popping: Mutex<HashSet<String>>,
+}
+
+/// A tab's claim on an in-flight pop-out; dropping it releases the claim on every exit path.
+pub struct PopOutReservation<'a> {
+    state: &'a AppState,
+    label: String,
+}
+
+impl Drop for PopOutReservation<'_> {
+    fn drop(&mut self) {
+        self.state
+            .popping
+            .lock()
+            .expect("popping lock")
+            .remove(&self.label);
+    }
 }
 
 impl AppState {
@@ -197,6 +216,7 @@ impl AppState {
             tab_digit_keys: Mutex::new(TabDigitKeys::default()),
             last_cfg: Mutex::new(Config::default()),
             detached: Mutex::new(HashMap::new()),
+            popping: Mutex::new(HashSet::new()),
         }
     }
 
@@ -384,6 +404,22 @@ impl AppState {
             .values()
             .map(|d| d.tab_label.clone())
             .collect()
+    }
+
+    /// Claim `label` for one `pop_out_tab` call, or refuse if the tab is already popped out or
+    /// another call is popping it. `pop_out_tab` is an async command, so two calls (a double-click
+    /// on ⤢, ⌘⇧O twice) can run at once; the check and the claim happen under one lock, and the
+    /// claim lasts until the call's `detached` insert is done.
+    pub fn reserve_pop_out(&self, label: &str) -> Result<PopOutReservation<'_>, String> {
+        let mut popping = self.popping.lock().expect("popping lock");
+        if popping.contains(label) || self.detached_tab_labels().contains(label) {
+            return Err(format!("{label} is already popped out"));
+        }
+        popping.insert(label.to_string());
+        Ok(PopOutReservation {
+            state: self,
+            label: label.to_string(),
+        })
     }
 
     /// The detached window's Tauri label hosting tab `tab_label`, if it is popped out.
@@ -584,15 +620,11 @@ pub fn pop_out_tab(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    // Defensive: the chrome already suppresses the pop-out control on a row it knows is detached
-    // (`!t.detached` in chrome-core), but a stale double-click could still race the DTO refresh. A
-    // second pop of the same label would try to build a second Tauri window under the SAME label
-    // (the token is the tab label itself) — `WindowLabelAlreadyExists` — which would then trip the
-    // failure-path restore below and stomp the first, still-live detached window's content webview.
-    // Reject up front instead.
-    if state.detached_tab_labels().contains(&label) {
-        return Err(format!("{label} is already popped out"));
-    }
+    // The chrome suppresses the pop-out control on a row it knows is detached, but a double-click
+    // or a repeated ⌘⇧O can still race the DTO refresh. A second pop of the same label would build
+    // a second Tauri window under the SAME label (the token is the tab label itself), fail, and
+    // trip the failure-path restore below, stomping the first pop's origin state. Held until return.
+    let _reservation = state.reserve_pop_out(&label)?;
     let view = state
         .view(&label)
         .ok_or_else(|| format!("no such tab: {label}"))?;
@@ -947,6 +979,31 @@ mod tests {
             },
         );
         state
+    }
+
+    #[test]
+    fn a_pop_out_in_flight_refuses_a_second_for_the_same_tab() {
+        let state = AppState::new();
+        let first = state.reserve_pop_out("w:tab-a").expect("first pop-out");
+        assert!(
+            state.reserve_pop_out("w:tab-a").is_err(),
+            "a concurrent second pop-out must be refused"
+        );
+        assert!(
+            state.reserve_pop_out("w:tab-b").is_ok(),
+            "another tab pops out freely"
+        );
+        drop(first);
+        assert!(
+            state.reserve_pop_out("w:tab-a").is_ok(),
+            "the reservation ends with the call"
+        );
+    }
+
+    #[test]
+    fn an_already_popped_out_tab_refuses_a_pop_out() {
+        let state = out_of_renamed();
+        assert!(state.reserve_pop_out("work:tab-x").is_err());
     }
 
     #[test]

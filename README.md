@@ -129,7 +129,8 @@ colour = "#4a9"
 | `depth` | `6` | How many levels deep to scan (≥ 1). |
 
 The app binary, `/Applications/lector.app/Contents/MacOS/lector`, doubles as a config tool:
-`lector validate [path]` prints the resolved windows and tabs plus any warnings, and
+`lector validate [path]` prints the resolved windows, tabs and roots (with the projects each root
+finds) plus any warnings, and
 `lector fmt [--check] [path]` rewrites a config in house style. Both default to the config path
 above.
 

@@ -172,27 +172,19 @@ impl Servers {
     }
 }
 
-/// Does anything answer on this loopback port? The liveness primitive, split out as a free
-/// function so it is directly testable against a port nobody is serving — a dead serve thread is
-/// indistinguishable, from the outside, from a port that was never bound.
-///
-/// A closed loopback port refuses immediately (RST), so the timeout only bites on a black-holed
-/// port, which does not happen on loopback. The refresh path can afford this per tab.
-fn port_answers(port: u16) -> bool {
-    std::net::TcpStream::connect_timeout(
-        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-        std::time::Duration::from_millis(50),
-    )
-    .is_ok()
-}
-
 impl Servers {
-    /// True iff this tab's server is registered AND still answering. A panic in the serve loop
-    /// kills that thread silently (compositor's FOLLOWUPS records this: the loop is one
-    /// background thread among N here, so a panic doesn't abort the process — it just stops that
-    /// site). The registry alone would still report `live`, so probe the port before believing it.
+    /// True iff this tab's server is registered AND its request loop is still running. A panic in
+    /// the serve loop kills that thread silently (the loop is one background thread among N here,
+    /// so a panic doesn't abort the process — it just stops that site), and the port keeps
+    /// accepting connections afterwards, so neither the registry nor a TCP probe can see it;
+    /// `ServeHandle::serving` can.
     pub fn is_alive(&self, label: &str) -> bool {
-        self.port(label).is_some_and(port_answers)
+        self.live
+            .lock()
+            .expect("servers lock")
+            .get(label)
+            .and_then(|s| s.handle.as_ref())
+            .is_some_and(ServeHandle::serving)
     }
 
     /// Drop any tab whose server has died, so the chrome's `live` dot goes hollow and re-selecting
@@ -207,8 +199,8 @@ impl Servers {
         }
     }
 
-    /// Register a port with no server behind it — the state a panicked serve loop leaves (the
-    /// registry still lists the label, but nothing answers on its port). Test-only: production
+    /// Register a port with no serving loop behind it — the state a panicked serve loop leaves (the
+    /// registry still lists the label, but nothing serves it). Test-only: production
     /// code always inserts through `start()`, which never registers a `None` handle.
     #[cfg(test)]
     pub(crate) fn register_unserved_for_test(&self, label: &str, port: u16) {
@@ -465,27 +457,30 @@ mod tests {
     }
 
     #[test]
-    fn port_answers_only_while_something_serves() {
-        // The liveness primitive. A port nobody serves is exactly what a died-in-the-night serve
-        // thread leaves behind — indistinguishable from outside, which is why this is the probe.
+    fn is_alive_only_while_the_loop_serves() {
         let dir = scratch("answers");
         let s = Servers::new();
-        let port = s.start("t1", &dir).unwrap();
-        assert!(port_answers(port), "a live server must answer");
-
+        s.start("t1", &dir).unwrap();
+        assert!(s.is_alive("t1"), "a started server is alive");
         s.stop("t1");
-        // The listener frees on tiny_http's schedule (its accept thread is signalled, not
-        // joined), so poll rather than assert once — the same asynchrony compositor's own test
-        // hit.
-        let stopped = (0..100).any(|_| {
-            if !port_answers(port) {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            false
-        });
-        assert!(stopped, "a stopped server must stop answering");
+        assert!(!s.is_alive("t1"), "a stopped server is not");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn is_alive_is_false_when_the_port_accepts_but_no_loop_serves() {
+        // A dead compositor serve loop leaves its port accepting: tiny_http's accept thread lives
+        // as long as the handle. So a listening port with no serving loop behind it must not read
+        // as alive.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let s = Servers::new();
+        s.register_unserved_for_test("zombie", port);
+        assert!(
+            !s.is_alive("zombie"),
+            "an accepting port is not a serving site"
+        );
+        drop(listener);
     }
 
     #[test]
@@ -498,8 +493,7 @@ mod tests {
     fn reap_drops_a_registered_tab_whose_server_stopped_answering() {
         // The spec's requirement, and the compositor follow-up it graduates: a serve thread that
         // dies must drop the live dot rather than leave the tab looking live. Registering a port
-        // that nothing serves reproduces exactly the state a panicked serve loop leaves — the
-        // registry says live, the port says otherwise.
+        // with no serving loop reproduces the state a panicked serve loop leaves.
         let s = Servers::new();
         let dead_port = {
             // Bind and immediately drop, so the port is real but unserved.

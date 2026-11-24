@@ -17,6 +17,14 @@ struct SiteServer {
     handle: Option<ServeHandle>,
 }
 
+impl SiteServer {
+    /// Whether this site's request loop is still running — the one liveness test, shared by
+    /// `start`'s reuse check and `is_alive`.
+    fn serving(&self) -> bool {
+        self.handle.as_ref().is_some_and(ServeHandle::serving)
+    }
+}
+
 /// The registry of live servers, keyed by `TabView::label`. A label absent from the map is a cold
 /// tab — the two states are the map's membership, not a flag, so they cannot disagree.
 #[derive(Default)]
@@ -29,8 +37,9 @@ impl Servers {
         Servers::default()
     }
 
-    /// Start `dir`'s server if this tab is cold, and return its port. Idempotent: an already-live
-    /// tab returns its existing port rather than spawning a second server for the same repo.
+    /// Start `dir`'s server unless this tab's is already serving, and return its port. Idempotent:
+    /// a serving tab returns its existing port rather than spawning a second server for the same
+    /// repo. A registered server whose loop has stopped is replaced, as if the tab were cold.
     ///
     /// On failure (missing dir, bind failure) nothing is registered — the tab stays cold and the
     /// caller sends the message to the chrome's `setError`. That is the error channel; per-repo
@@ -47,40 +56,36 @@ impl Servers {
     /// that rare race, one build is wasted and one transient bind happens — strictly better than
     /// stalling every tab for up to ~450ms on every cold start.
     pub fn start(&self, label: &str, dir: &Path) -> Result<u16, String> {
-        if let Some(s) = self.live.lock().expect("servers lock").get(label) {
-            return Ok(s.port);
+        let dead = {
+            let mut live = self.live.lock().expect("servers lock");
+            match live.get(label) {
+                Some(s) if s.serving() => return Ok(s.port),
+                Some(_) => live.remove(label),
+                None => None,
+            }
+        };
+        if let Some(h) = dead.and_then(|s| s.handle) {
+            h.shutdown();
         }
         let handle = compositor::serve_handle(dir).map_err(|e| format!("{e:#}"))?;
         let port = handle.port;
+        let ours = SiteServer {
+            port,
+            handle: Some(handle),
+        };
 
-        let loser = {
+        // `discard` is whichever server loses: ours if another thread's serving one won the race
+        // while we were building, else whatever dead entry ours replaces. Shut down outside the
+        // lock (see the doc comment above).
+        let (port, discard) = {
             let mut live = self.live.lock().expect("servers lock");
-            if let Some(s) = live.get(label) {
-                // Another thread won the race while we were building. Keep the winner, discard
-                // ours — but not under the lock (see the doc comment above).
-                Some((
-                    s.port,
-                    SiteServer {
-                        port,
-                        handle: Some(handle),
-                    },
-                ))
-            } else {
-                live.insert(
-                    label.to_string(),
-                    SiteServer {
-                        port,
-                        handle: Some(handle),
-                    },
-                );
-                None
+            match live.get(label) {
+                Some(s) if s.serving() => (s.port, Some(ours)),
+                _ => (port, live.insert(label.to_string(), ours)),
             }
         };
-        if let Some((winner_port, ours)) = loser {
-            if let Some(h) = ours.handle {
-                h.shutdown();
-            }
-            return Ok(winner_port);
+        if let Some(h) = discard.and_then(|s| s.handle) {
+            h.shutdown();
         }
         Ok(port)
     }
@@ -183,8 +188,7 @@ impl Servers {
             .lock()
             .expect("servers lock")
             .get(label)
-            .and_then(|s| s.handle.as_ref())
-            .is_some_and(ServeHandle::serving)
+            .is_some_and(SiteServer::serving)
     }
 
     /// Drop any tab whose server has died, so the chrome's `live` dot goes hollow and re-selecting
@@ -512,6 +516,30 @@ mod tests {
             !s.is_live("ghost"),
             "reap must drop a tab whose server died"
         );
+    }
+
+    #[test]
+    fn start_replaces_a_registered_server_that_stopped_serving() {
+        // A dead serve loop stays registered until a reap; selecting its tab before then must
+        // restart it, not hand back the dead port.
+        let dir = scratch("restart");
+        let s = Servers::new();
+        let dead_port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        s.register_unserved_for_test("t1", dead_port);
+
+        let port = s.start("t1", &dir).expect("server restarts");
+        assert!(
+            s.is_alive("t1"),
+            "start must replace the dead server, not reuse it"
+        );
+        assert_eq!(s.port("t1"), Some(port));
+        assert!(get(port, "/").contains("200 OK"));
+
+        s.shutdown_all();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

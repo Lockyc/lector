@@ -696,20 +696,7 @@ pub fn validate_cli(path: Option<std::path::PathBuf>) -> i32 {
     match lector_config::load_config(&path) {
         Ok((cfg, warnings)) => {
             println!("ok: {} ({} window(s))", path.display(), cfg.windows.len());
-            for w in &cfg.windows {
-                println!("  window {:?}", w.title);
-                for v in w.tab_views(&w.title) {
-                    let group = v
-                        .group
-                        .as_deref()
-                        .map(|g| format!(" group={g:?}"))
-                        .unwrap_or_default();
-                    println!(
-                        "    tab {:?} dir={} load_on_open={}{}",
-                        v.title, v.dir, v.load_on_open, group
-                    );
-                }
-            }
+            print!("{}", resolved_tree(&cfg));
             for warn in &warnings {
                 eprintln!("warning [{}]: {}", warn.window, warn.message);
             }
@@ -720,6 +707,41 @@ pub fn validate_cli(path: Option<std::path::PathBuf>) -> i32 {
             1
         }
     }
+}
+
+/// Each window's hand-written tabs, then each `[[window.root]]` with the projects it discovers on
+/// disk now — what `lector validate` prints under its `ok:` line.
+fn resolved_tree(cfg: &lector_config::Config) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for w in &cfg.windows {
+        let _ = writeln!(out, "  window {:?}", w.title);
+        for v in w.tab_views(&w.title) {
+            let group = v
+                .group
+                .as_deref()
+                .map(|g| format!(" group={g:?}"))
+                .unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "    tab {:?} dir={} load_on_open={}{}",
+                v.title, v.dir, v.load_on_open, group
+            );
+        }
+        for root in w.resolved_roots() {
+            let _ = writeln!(
+                out,
+                "    root {:?} dir={} depth={}",
+                root.name,
+                root.dir.display(),
+                root.depth
+            );
+            for p in lector_config::discover_projects(std::slice::from_ref(&root)) {
+                let _ = writeln!(out, "      project {}", p.path.display());
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -794,6 +816,32 @@ mod tests {
             Some("line 3: bad")
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn validate_prints_each_root_and_the_projects_it_finds() {
+        let root = std::env::temp_dir().join(format!("lector-validate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("proj/.git")).unwrap();
+        let src = format!(
+            "[[window]]\ntitle = \"Roots\"\n[[window.root]]\nname = \"Code\"\ndir = {:?}\ndepth = 2\n",
+            root.display().to_string()
+        );
+        let (cfg, _) = lector_config::parse_and_validate(&src).unwrap();
+
+        let tree = resolved_tree(&cfg);
+        assert!(
+            tree.contains(&format!(
+                "    root \"Code\" dir={} depth=2\n",
+                root.display()
+            )),
+            "{tree}"
+        );
+        assert!(
+            tree.contains(&format!("      project {}\n", root.join("proj").display())),
+            "{tree}"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

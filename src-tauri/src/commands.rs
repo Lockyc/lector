@@ -57,8 +57,8 @@ pub struct TabPayload {
     pub label: String,
     pub title: String,
     pub group: Option<String>,
-    /// True iff this repo's server is registered AND still answering — the registry's membership
-    /// probed for life, never the config's `load_on_open`. See `Servers::is_alive`.
+    /// True iff this repo's server is registered AND still serving, never the config's
+    /// `load_on_open`. See `Servers::is_alive`.
     pub loaded: bool,
     pub active: bool,
     /// Popped out into its own detached window (`pop_out_tab`). Its server keeps running (`loaded`

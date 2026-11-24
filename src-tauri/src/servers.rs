@@ -8,10 +8,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-/// One live site. `handle` is `None` only for a registry entry that a panicked serve thread has
-/// left behind (see [`Servers::register_unserved_for_test`]) — a real `start()` always inserts
-/// `Some`. Modeling it as optional here is what makes the dead-registration state constructible
-/// for `reap`'s test without bending the production type.
+/// One live site. `start()` always inserts `Some(handle)`; a panicked serve loop leaves that
+/// handle in place with `serving() == false`. `None` exists only through
+/// [`Servers::register_unserved_for_test`], standing in for a loop that has stopped serving.
 struct SiteServer {
     port: u16,
     handle: Option<ServeHandle>,
@@ -203,9 +202,8 @@ impl Servers {
         }
     }
 
-    /// Register a port with no serving loop behind it — the state a panicked serve loop leaves (the
-    /// registry still lists the label, but nothing serves it). Test-only: production
-    /// code always inserts through `start()`, which never registers a `None` handle.
+    /// Register a port with no serving loop behind it, standing in for a panicked serve loop (the
+    /// registry still lists the label, but nothing serves it).
     #[cfg(test)]
     pub(crate) fn register_unserved_for_test(&self, label: &str, port: u16) {
         self.live
@@ -494,10 +492,9 @@ mod tests {
     }
 
     #[test]
-    fn reap_drops_a_registered_tab_whose_server_stopped_answering() {
-        // The spec's requirement, and the compositor follow-up it graduates: a serve thread that
-        // dies must drop the live dot rather than leave the tab looking live. Registering a port
-        // with no serving loop reproduces the state a panicked serve loop leaves.
+    fn reap_drops_a_registered_tab_whose_server_stopped_serving() {
+        // A serve thread that dies must drop the live dot rather than leave the tab looking live.
+        // Registering a port with no serving loop stands in for a panicked serve loop.
         let s = Servers::new();
         let dead_port = {
             // Bind and immediately drop, so the port is real but unserved.
@@ -508,7 +505,7 @@ mod tests {
         assert!(s.is_live("ghost"), "the registry believes it is live");
         assert!(
             !s.is_alive("ghost"),
-            "but nothing answers, so it is not alive"
+            "but nothing serves it, so it is not alive"
         );
 
         s.reap();

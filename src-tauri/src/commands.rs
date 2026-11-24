@@ -386,6 +386,16 @@ impl AppState {
             .collect()
     }
 
+    /// The detached window's Tauri label hosting tab `tab_label`, if it is popped out.
+    pub fn detached_window_for(&self, tab_label: &str) -> Option<String> {
+        self.detached
+            .lock()
+            .expect("detached lock")
+            .iter()
+            .find(|(_, d)| d.tab_label == tab_label)
+            .map(|(l, _)| l.clone())
+    }
+
     /// Remove and return the detached-window labels of every tab whose origin no window in
     /// `entries` (the `WindowSet`'s) is titled — its window left the config — and rehome every
     /// other tab (and its server) onto the label its origin resolves to now, so none keeps a label
@@ -696,17 +706,11 @@ pub fn raise_popped_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) {
-    let target = state
-        .detached
-        .lock()
-        .expect("detached lock")
-        .iter()
-        .find(|(_, d)| d.tab_label == label)
-        .map(|(l, _)| l.clone());
-    if let Some(l) = target {
-        if let Some(win) = app.get_window(&l) {
-            shell_core::focus::bring_forward(&win);
-        }
+    if let Some(win) = state
+        .detached_window_for(&label)
+        .and_then(|l| app.get_window(&l))
+    {
+        shell_core::focus::bring_forward(&win);
     }
 }
 
@@ -715,17 +719,11 @@ pub fn raise_popped_window(
 /// still-running server/port); the same return path as closing the popped-out window by hand.
 #[tauri::command]
 pub fn pop_in_tab(label: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
-    let target = state
-        .detached
-        .lock()
-        .expect("detached lock")
-        .iter()
-        .find(|(_, d)| d.tab_label == label)
-        .map(|(l, _)| l.clone());
-    if let Some(l) = target {
-        if let Some(win) = app.get_window(&l) {
-            let _ = win.close();
-        }
+    if let Some(win) = state
+        .detached_window_for(&label)
+        .and_then(|l| app.get_window(&l))
+    {
+        let _ = win.close();
     }
 }
 

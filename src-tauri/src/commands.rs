@@ -930,11 +930,7 @@ pub fn window_menu(x: f64, y: f64, window: tauri::Window) -> Result<(), String> 
 /// takes. A config that now fails to parse keeps last-good and surfaces the error.
 #[tauri::command(async)]
 pub fn rescan_root(app: tauri::AppHandle) {
-    let path = lector_config::resolve_config_path();
-    match lector_config::load_config(&path) {
-        Ok((cfg, warnings)) => crate::apply_clean_load(&app, &cfg, &warnings),
-        Err(e) => crate::surface_load_error(&app, &e.to_string()),
-    }
+    crate::reload_now(&app);
 }
 
 #[cfg(test)]

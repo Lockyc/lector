@@ -411,8 +411,8 @@ pub(crate) fn redock<R: LectorRuntime>(app: &AppHandle<R>, detached_label: &str)
     let _ = app.emit_to(origin_wid.as_str(), ChromeEvent::ConfigReloaded.name(), ());
 }
 
-/// Load the config and apply it — the home surface's "Create a starter config" button, which turns
-/// a `NoConfig` state into a real config the app has never seen.
+/// Load the config and apply it, or surface why it failed to load — the home surface's "Create a
+/// starter config" button and the chrome's ⟳ rescan.
 pub(crate) fn reload_now(app: &AppHandle) {
     reload_from(app, &lector_config::resolve_config_path());
 }
@@ -421,7 +421,7 @@ pub(crate) fn reload_now(app: &AppHandle) {
 fn reload_from<R: LectorRuntime>(app: &AppHandle<R>, path: &std::path::Path) {
     match lector_config::load_config(path) {
         Ok((cfg, warnings)) => apply_clean_load(app, &cfg, &warnings),
-        Err(e) => eprintln!("config error: {e}"),
+        Err(e) => surface_load_error(app, &e.to_string()),
     }
 }
 
@@ -457,6 +457,7 @@ pub(crate) fn apply_clean_load<R: LectorRuntime>(
 /// Surface a config that failed to load: every chrome and the home surface show the error, and
 /// the last-good config (and every running server) is left untouched.
 pub(crate) fn surface_load_error<R: LectorRuntime>(app: &AppHandle<R>, msg: &str) {
+    eprintln!("config error: {msg}");
     emit_to_all_chrome(app, ChromeEvent::ConfigError, msg.to_string());
     app.state::<R::Windows>()
         .set_load_error(app, Some(msg.to_string()));
@@ -638,9 +639,7 @@ pub fn run() {
                         self_write
                     }
                     Err(e) => {
-                        let msg = e.to_string();
-                        eprintln!("config error: {msg}");
-                        surface_load_error(&app_handle, &msg);
+                        surface_load_error(&app_handle, &e.to_string());
                         None
                     }
                 }
@@ -793,6 +792,22 @@ mod tests {
         assert_eq!(
             app.state::<MockSet>().load_error.lock().unwrap().as_deref(),
             Some("line 3: bad")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reload_now_surfaces_a_config_that_fails_to_load() {
+        let app = mock_app();
+        let app = app.handle();
+        let dir = doc_dir("reload-broken");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[[window]\n").unwrap();
+
+        reload_from(app, &path);
+        assert!(
+            app.state::<MockSet>().load_error.lock().unwrap().is_some(),
+            "a failed load reaches the app, not just stderr"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

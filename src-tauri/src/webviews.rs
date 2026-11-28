@@ -24,6 +24,7 @@ use tauri::{
     WebviewWindow, Window,
 };
 
+use shell_core::spaces::ShellWindow as _;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -71,7 +72,7 @@ pub fn build_window<R: LectorRuntime>(
             .inner_size(win_w, win_h)
             .hidden_title(true)
             .title_bar_style(TitleBarStyle::Overlay)
-            .focused(shell_core::focus::focused());
+            .shell_window();
     let webview_window = R::build_window(app, window_id, builder)?;
     let window = webview_window.as_ref().window();
     window.set_theme(crate::theme_for(
